@@ -205,9 +205,9 @@ function vLogin() {
   view.innerHTML = `
   <form id="fLogin" class="card login">
     <p class="brand">Taxi Alicante · Rondas comerciales</p>
-    <label>Número de usuario
-      <div class="seg" id="segUser">
-        <button type="button" data-v="1">1</button><button type="button" data-v="2">2</button><button type="button" data-v="3">3</button>
+    <label>Usuario
+      <div class="seg users" id="segUser">
+        <button type="button" data-v="1">1 - DANIEL</button><button type="button" data-v="2">2 - JUAN</button><button type="button" data-v="3">3 - JORGE</button>
       </div>
     </label>
     <label>PIN <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="8" required></label>

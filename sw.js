@@ -1,5 +1,5 @@
 // Service worker: app disponible sin cobertura. Subir VERSION en cada despliegue.
-const VERSION = 'rondas-v1.1.0';
+const VERSION = 'rondas-v1.1.1';
 const SHELL = ['./', 'index.html', 'app.js', 'styles.css', 'config.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

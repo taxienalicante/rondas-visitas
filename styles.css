@@ -109,3 +109,4 @@ code { font-size: 13px; background: #eef1f6; padding: 1px 4px; border-radius: 4p
 [hidden] { display: none !important; }
 .sitio.bloq { opacity: .6; border-left-color: #9aa1ad; }
 .alert.gris { background: #eceef2; color: #3a3f48; }
+.seg.users { flex-direction: column; } .seg.users button + button { border-left: 0; border-top: 1px solid var(--line); }
