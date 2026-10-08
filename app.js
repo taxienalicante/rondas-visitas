@@ -4,7 +4,7 @@
 
 const API = (window.RONDAS_API || '').trim();
 const DEMO = !API;
-const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', filtro: 'rondas_filtro' };
+const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', filtro: 'rondas_filtro', filtroHoy: 'rondas_filtro_hoy' };
 const TIPOS = { hotel: 'Hotel', clinica: 'Clínica', residencia: 'Residencia', negocio: 'Negocio', ambulatorio: 'Ambulatorio' };
 
 /* ───────── estado ───────── */
@@ -18,6 +18,7 @@ let data = ls.get(LS.data, null);      // {sitios, paquetes, visitas, usuarios, 
 let queue = ls.get(LS.queue, []);      // visitas pendientes de enviar
 let syncing = false;
 let syncError = '';
+let volverA = '';   // lista desde la que se abrió la ficha (Hoy, paquete, panel)
 
 const $ = s => document.querySelector(s);
 const view = $('#view');
@@ -72,6 +73,44 @@ function paquetes() {
   return [...m.values()];
 }
 const enRonda = s => !s.no_visitar;   // no_visitar = lo lleva Jorge: fuera del % y del punteo
+/* ───────── sistema vivo: cuándo toca cada sitio ───────── */
+const VOLVER = [['2s', '2 semanas', 14], ['1m', '1 mes', 30], ['3m', '3 meses', 90], ['6m', '6 meses', 180], ['fiel', 'Ya es cliente fiel', null], ['no', 'No volver', null]];
+const volverDe = c => VOLVER.find(x => x[0] === c);
+const CAD_DEF = 90;   // si no hay desenlace ni cadencia
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const addDias = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d); };
+const diasEntre = (a, b) => Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 864e5);
+const PRIO = { A: 0, B: 1, C: 2 };
+const ESTADOS = { 'pendiente': 'Pendiente', 'en seguimiento': 'En seguimiento', 'cliente ok': 'Cliente OK', 'no volver': 'No volver', 'esperar': 'Esperar' };
+
+/* Reglas (gana la primera): estado no volver/esperar → fuera · fecha forzada por Hoteles posterior a la última visita →
+   esa fecha · desenlace de la última visita · última visita + cadencia · sin visitas → pendiente (toca ya) */
+function plan(s) {
+  const u = ultimaVisita(s.id);
+  const est = norm(s.estado);
+  if (s.no_visitar) return { fuera: true, motivo: 'Lo lleva Jorge', u };
+  if (est === 'no volver') return { fuera: true, motivo: 'No volver (Hoteles)', u };
+  if (est === 'esperar') return { fuera: true, motivo: 'En espera (Hoteles)', u };
+  if (s.proxima_visita && (!u || s.proxima_visita > u.fecha)) return { fecha: s.proxima_visita, motivo: 'fecha fijada por Hoteles', u };
+  if (u && u.volver === 'no') return { fuera: true, motivo: 'No volver (visita ' + fmtFecha(u.fecha) + ')', u };
+  if (u && volverDe(u.volver)) {
+    const dias = volverDe(u.volver)[2] || Number(s.cadencia_dias) || 180;
+    return { fecha: addDias(u.fecha, dias), motivo: volverDe(u.volver)[1].toLowerCase(), u };
+  }
+  if (u) return { fecha: addDias(u.fecha, Number(s.cadencia_dias) || CAD_DEF), motivo: 'cada ' + (Number(s.cadencia_dias) || CAD_DEF) + ' días', u };
+  return { pendiente: true, motivo: 'sin visitar', u };
+}
+const toca = p => !p.fuera && (p.pendiente || p.fecha <= hoyISO());
+function textoPlan(p) {
+  if (p.fuera) return p.motivo;
+  if (p.pendiente) return 'Sin visitar';
+  const d = diasEntre(hoyISO(), p.fecha);
+  if (d < 0) return `Tocaba el ${fmtFecha(p.fecha)} (hace ${-d} día${d === -1 ? '' : 's'})`;
+  if (d === 0) return 'Toca hoy';
+  return `Próxima: ${fmtFecha(p.fecha)} (en ${d} día${d === 1 ? '' : 's'})`;
+}
+const prioTag = s => s.prioridad ? `<span class="prio p${esc(s.prioridad)}">${esc(s.prioridad)}</span>` : '';
+
 function visitadosSet() { return new Set(visitas().map(v => v.sitio_id)); }
 
 /* contacto vigente: el último tel/email capturado en visita manda sobre el del maestro */
@@ -173,6 +212,15 @@ view.addEventListener('click', e => {
   (navigator.clipboard?.writeText(txt) || Promise.reject()).then(() => toast('Copiado: ' + txt), () => {});
 });
 
+function tabs(activo) {
+  const n = colaHoy(filtroHoyMios()).length;
+  return `<div class="seg tabs main" id="tabsMain">
+    <button data-go="#/hoy" class="${activo === 'hoy' ? 'on' : ''}">Hoy toca${n ? ` <b class="badge">${n}</b>` : ''}</button>
+    <button data-go="#/paquetes" class="${activo === 'paq' ? 'on' : ''}">Paquetes</button>
+  </div>`;
+}
+view.addEventListener('click', e => { const b = e.target.closest('#tabsMain button'); if (b) location.hash = b.dataset.go; });
+
 /* ───────── router ───────── */
 function route() {
   window.scrollTo(0, 0);
@@ -183,8 +231,9 @@ function route() {
     case 'paquete': return vPaquete(a);
     case 'sitio': return vSitio(a);
     case 'visita': return vForm(a, b);
-    case 'panel': return auth.admin ? vPanel() : vPaquetes();
-    default: return vPaquetes();
+    case 'panel': return auth.admin ? vPanel() : vHoy();
+    case 'paquetes': return vPaquetes();
+    default: return vHoy();
   }
 }
 window.addEventListener('hashchange', route);
@@ -228,7 +277,7 @@ function vLogin() {
     try {
       const j = await call('login');
       auth = { ...auth, ...j.user }; ls.set(LS.auth, auth);
-      location.hash = '#/paquetes';
+      location.hash = '#/hoy';
       await refresh({ silent: true });
       route();
     } catch (err) {
@@ -238,8 +287,51 @@ function vLogin() {
   };
 }
 
-/* ───────── 2 · PAQUETES ───────── */
+/* ───────── 2a · HOY TOCA ───────── */
+function misPaquetes() { return paquetes().filter(p => esMio(p)); }
+function filtroHoyMios() { return ls.get(LS.filtroHoy, 'mios') === 'mios' && misPaquetes().length > 0; }
+function sitiosBase(mios) {
+  const ids = mios ? new Set(misPaquetes().map(p => p.id)) : null;
+  return (data.sitios || []).filter(s => !ids || ids.has(s.paquete));
+}
+function colaHoy(mios) {
+  return sitiosBase(mios).map(s => ({ s, p: plan(s) })).filter(x => toca(x.p))
+    .sort((a, b) => (PRIO[a.s.prioridad] ?? 3) - (PRIO[b.s.prioridad] ?? 3)
+      || (a.p.pendiente ? '0' : a.p.fecha).localeCompare(b.p.pendiente ? '0' : b.p.fecha)
+      || (b.s.pedidos_mes_12m || 0) - (a.s.pedidos_mes_12m || 0));
+}
+function vHoy() {
+  volverA = '#/hoy';
+  header(`Hola, ${auth.nombre || ''}`);
+  const tengo = misPaquetes().length > 0;
+  const mios = filtroHoyMios();
+  const cola = colaHoy(mios);
+  const hoy = hoyISO(), en7 = addDias(hoy, 7);
+  const prox = sitiosBase(mios).map(s => ({ s, p: plan(s) }))
+    .filter(x => !x.p.fuera && !x.p.pendiente && x.p.fecha > hoy && x.p.fecha <= en7)
+    .sort((a, b) => a.p.fecha.localeCompare(b.p.fecha));
+  const zonas = [...new Set(cola.map(x => x.s.zona))];
+  const item = ({ s, p }) => `<a class="card sitio ${s.situacion === 'cliente' ? 'cli' : 'nuevo'}" href="#/sitio/${s.id}">
+      <div class="row"><strong>${prioTag(s)}${esc(s.nombre)}</strong></div>
+      <div class="muted small">${esc(TIPOS[s.tipo] || s.tipo)} · ${esc(s.direccion)} · <em>${esc(s.paquete)}</em></div>
+      <div class="tag ${p.pendiente ? '' : 'warn'}">${esc(textoPlan(p))}</div>
+    </a>`;
+  view.innerHTML = `
+  ${tabs('hoy')}
+  <div class="seg tabs" id="filHoy">
+    <button data-v="mios" class="${mios ? 'on' : ''}" ${tengo ? '' : 'disabled'}>Mis paquetes</button>
+    <button data-v="todos" class="${mios ? '' : 'on'}">Todos</button>
+  </div>
+  <p class="muted small legend">${cola.length ? `${cola.length} sitio${cola.length > 1 ? 's' : ''} por visitar · ordenados por prioridad` : ''}</p>
+  ${cola.length ? zonas.map(z => `<h2 class="zona">${esc(z)}</h2>${cola.filter(x => x.s.zona === z).map(item).join('')}`).join('')
+    : '<p class="empty">✓ No toca ninguna visita hoy</p>'}
+  ${prox.length ? `<h2 class="zona">Próximos 7 días (${prox.length})</h2>${prox.map(item).join('')}` : ''}`;
+  $('#filHoy').onclick = e => { const b = e.target.closest('button'); if (!b || b.disabled) return; ls.set(LS.filtroHoy, b.dataset.v); vHoy(); };
+}
+
+/* ───────── 2b · PAQUETES ───────── */
 function vPaquetes() {
+  volverA = '#/paquetes';
   header(`Hola, ${auth.nombre || ''}`);
   const filtro = ls.get(LS.filtro, 'mios');
   const vis = visitadosSet();
@@ -250,6 +342,7 @@ function vPaquetes() {
   const zonas = [...new Set(ps.map(p => p.zona))];
 
   view.innerHTML = `
+  ${tabs('paq')}
   <div class="search"><input id="q" type="search" placeholder="Buscar sitio en todos los paquetes…" autocomplete="off"></div>
   <div id="res"></div>
   <div class="seg tabs" id="fil">
@@ -260,10 +353,11 @@ function vPaquetes() {
     <h2 class="zona">${esc(z)}</h2>
     ${ps.filter(p => p.zona === z).map(p => {
       const r = p.sitios.filter(enRonda), n = r.length, k = r.filter(s => vis.has(s.id)).length, pc = n ? Math.round(100 * k / n) : 100;
-      return `<a class="card pkg" href="#/paquete/${encodeURIComponent(p.id)}">
-        <div class="row"><strong>${esc(p.id)}</strong><span class="pct ${pc === 100 ? 'full' : ''}">${pc}%</span></div>
+      const t = p.sitios.filter(s => toca(plan(s))).length;
+      return `<a class="card pkg ${pc === 100 ? 'hecho' : ''}" href="#/paquete/${encodeURIComponent(p.id)}">
+        <div class="row"><strong>${esc(p.id)}</strong>${p.asignado_a ? `<span class="quien">${esc(p.asignado_a)}</span>` : '<span class="quien libre">Sin asignar</span>'}</div>
         <div class="bar"><i style="width:${pc}%"></i></div>
-        <div class="row muted small"><span>${k} de ${n} visitados</span><span>${p.asignado_a ? esc(p.asignado_a) : ''}</span></div>
+        <div class="row small"><span>${pc === 100 ? '✓ Completado · ' : ''}${k} de ${n} visitados · <b>${pc}%</b></span><span class="${t ? 'pend' : 'muted'}">${t ? `${t} toca${t > 1 ? 'n' : ''}` : ''}</span></div>
       </a>`;
     }).join('')}`).join('')}
   </div>`;
@@ -287,10 +381,10 @@ function listaSitios(arr, conPaquete) {
   return arr.map(s => {
     const u = ultimaVisita(s.id);
     return `<a class="card sitio ${s.situacion === 'cliente' ? 'cli' : 'nuevo'}${s.no_visitar ? ' bloq' : ''}" href="#/sitio/${s.id}">
-      <div class="row"><strong>${esc(s.nombre)}</strong>${u ? `<span class="ok">✓ ${fmtFecha(u.fecha)}</span>` : ''}</div>
+      <div class="row"><strong>${prioTag(s)}${esc(s.nombre)}</strong>${u ? `<span class="ok">✓ ${fmtFecha(u.fecha)}</span>` : ''}</div>
       <div class="muted small">${esc(TIPOS[s.tipo] || s.tipo)} · ${esc(s.direccion)}${conPaquete ? ` · <em>${esc(s.paquete)}</em>` : ''}</div>
       ${s.sin_recepcion ? '<div class="tag warn">Sin recepción</div>' : ''}
-      ${s.no_visitar ? '<div class="tag">No visitar en ronda · lo lleva Jorge</div>' : ''}
+      ${s.no_visitar ? '<div class="tag">No visitar en ronda · lo lleva Jorge</div>' : (() => { const p = plan(s); return `<div class="tag ${toca(p) && !p.pendiente ? 'warn' : ''}">${esc(textoPlan(p))}</div>`; })()}
     </a>`;
   }).join('');
 }
@@ -300,6 +394,7 @@ function vPaquete(id) {
   const p = paquetes().find(x => x.id === id);
   if (!p) { location.hash = '#/paquetes'; return; }
   header(p.id, '#/paquetes');
+  volverA = '#/paquete/' + encodeURIComponent(p.id);
   const vis = visitadosSet();
   const enR = p.sitios.filter(enRonda);
   const k = enR.filter(s => vis.has(s.id)).length;
@@ -317,11 +412,12 @@ function vPaquete(id) {
 function vSitio(id) {
   const s = sitio(id);
   if (!s) { location.hash = '#/paquetes'; return; }
-  header(s.nombre, '#/paquete/' + encodeURIComponent(s.paquete));
+  header(s.nombre, volverA || '#/paquete/' + encodeURIComponent(s.paquete));
   const c = contacto(s);
   const tel = fmtTel(c.telefono);
   const vs = visitasDe(s.id);
   const si = b => b ? '<b class="yes">Sí</b>' : '<b class="no">No</b>';
+  const pl = plan(s);
   const reco = s.sin_recepcion
     ? 'Sin recepción: dejar cartel/QR en la entrada o contactar con la gestión. No dejar planos en recepción.'
     : s.recomendacion;
@@ -335,7 +431,12 @@ function vSitio(id) {
     </div>
     ${s.sin_recepcion ? '<div class="alert">⚠ Sin recepción</div>' : ''}
     ${s.no_visitar ? '<div class="alert gris">⛔ No visitar en ronda · lo lleva Jorge personalmente</div>' : ''}
+    <div class="plan ${pl.fuera ? 'fuera' : toca(pl) ? 'toca' : ''}">
+      <b>${esc(textoPlan(pl))}</b>${!pl.fuera && !pl.pendiente ? `<span class="muted small"> · ${esc(pl.motivo)}</span>` : ''}
+      ${pl.u ? `<div class="small muted">Última visita: ${fmtFecha(pl.u.fecha)} · ${esc(nombreUsuario(pl.u.usuario))}</div>` : ''}
+    </div>
     <dl>
+      ${s.prioridad || s.estado ? `<dt>Prioridad · Estado</dt><dd>${s.prioridad ? prioTag(s) : ''}${esc(ESTADOS[norm(s.estado)] || s.estado || '—')}</dd>` : ''}
       ${s.contacto ? `<dt>Contacto</dt><dd>${esc(s.contacto)}</dd>` : ''}
       <dt>Dirección</dt><dd data-copy="${esc(s.direccion)}">${esc(s.direccion) || '—'}</dd>
       <dt>Teléfono</dt><dd ${tel.txt ? `data-copy="${esc(tel.txt)}"` : ''}>${tel.txt ? (tel.ext ? `Ext. interna ${esc(tel.txt)}` : esc(tel.txt)) : '<span class="muted">sin dato</span>'}
@@ -376,6 +477,7 @@ function tarjetaVisita(v, conSitio) {
     ${v.recibido_por ? `<div class="small">Recibe: ${esc(v.recibido_por)}</div>` : ''}
     <div class="small muted">${items}</div>
     ${v.jorge_contactar ? `<div class="tag ${v.contactado ? '' : 'warn'}">Jorge contacta${v.contactar_motivo ? ': ' + esc(v.contactar_motivo) : ''}${v.contactado ? ' ✓ hecho' : ''}</div>` : ''}
+    ${volverDe(v.volver) ? `<div class="small">Volver: <b>${esc(volverDe(v.volver)[1])}</b></div>` : ''}
     ${v.observaciones ? `<p class="small">${esc(v.observaciones)}</p>` : ''}
     ${puedo ? `<a class="small link" href="#/visita/${v.sitio_id}/${encodeURIComponent(v.id)}">Editar</a>` : ''}
   </div>`;
@@ -395,7 +497,7 @@ function vForm(sitioId, visitaId) {
     id: uid(), sitio_id: s.id, usuario: auth.usuario, fecha: hoyISO(), hora: horaAhora(),
     recibido_por: '', expositor_puesto: null, planos_tiene: null, planos_dejados: false,
     tarjetas_tiene: null, tarjetas_dejadas: false, boligrafos_dados: 0, jorge_contactar: false,
-    contactar_motivo: '', telefono_nuevo: '', email_nuevo: '', observaciones: ''
+    contactar_motivo: '', telefono_nuevo: '', email_nuevo: '', observaciones: '', volver: ''
   };
   const c = contacto(s);
   const sinTel = !c.telefono || fmtTel(c.telefono).ext;
@@ -431,6 +533,8 @@ function vForm(sitioId, visitaId) {
     <label>Email ${c.email ? '<span class="muted small">(solo si el de la ficha está mal)</span>' : '<span class="tag warn">la ficha no lo tiene</span>'}
       <input name="email_nuevo" type="email" inputmode="email" value="${esc(v.email_nuevo)}" autocomplete="off"></label>
     <label>Observaciones <textarea name="observaciones" rows="3">${esc(v.observaciones)}</textarea></label>
+    <div class="field" id="fVolver"><span>¿Cuándo volver? *</span>
+      <div class="grid3" id="segVolver">${VOLVER.map(([c, t]) => `<button type="button" data-v="${c}" class="${v.volver === c ? 'on' : ''}${c === 'no' ? ' rojo' : ''}">${t}</button>`).join('')}</div></div>
     <button class="primary big" type="submit">Guardar visita</button>
     ${prev ? '<button type="button" class="danger" id="btnDel">Borrar visita</button>' : ''}
   </form>`;
@@ -443,6 +547,11 @@ function vForm(sitioId, visitaId) {
     g.closest('.field').classList.remove('err');
     if (g.dataset.k === 'jorge_contactar') $('#motivoBox').hidden = !v.jorge_contactar;
   });
+  $('#segVolver').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    v.volver = b.dataset.v; [...$('#segVolver').children].forEach(x => x.classList.toggle('on', x === b));
+    $('#fVolver').classList.remove('err');
+  };
   f.querySelector('.stepper').onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     const i = f.boligrafos_dados; i.value = Math.max(0, (Number(i.value) || 0) + Number(b.dataset.d));
@@ -462,6 +571,7 @@ function vForm(sitioId, visitaId) {
     f.querySelectorAll('.yn').forEach(g => g.closest('.field').classList.toggle('err', faltan.includes(g.dataset.k)));
     if (!v.fecha || !v.hora) return toast('Falta fecha u hora');
     if (faltan.length) return toast('Marca Sí/No en los campos con *');
+    if (!volverDe(v.volver)) { $('#fVolver').classList.add('err'); $('#fVolver').scrollIntoView({ block: 'center' }); return toast('Elige cuándo volver'); }
     if (v.email_nuevo && !/^\S+@\S+\.\S+$/.test(v.email_nuevo)) return toast('Email no válido');
     if (!v.jorge_contactar) v.contactar_motivo = '';
     guardar(v, prev ? 'Visita corregida' : 'Visita guardada');
@@ -479,7 +589,8 @@ function guardar(v, msg) {
 
 /* ───────── 6 · PANEL (admin) ───────── */
 function vPanel() {
-  header('Panel', '#/paquetes');
+  volverA = '#/panel';
+  header('Panel', '#/hoy');
   const vs = visitas();
   const vis = visitadosSet();
   const sitios = (data.sitios || []).filter(enRonda);
@@ -501,11 +612,13 @@ function vPanel() {
 
   view.innerHTML = `
   <section class="card">
-    <div class="kpis"><div><b>${pc(k, total)}%</b><span>visitado</span></div><div><b>${k}/${total}</b><span>sitios</span></div><div><b>${vs.length}</b><span>visitas</span></div></div>
+    <div class="kpis"><div><b>${pc(k, total)}%</b><span>visitado</span></div><div><b>${colaHoy(false).length}</b><span>tocan hoy</span></div><div><b>${vs.length}</b><span>visitas</span></div></div>
     <h3>Por zona</h3>
     ${zonas.map(z => `<div class="row small"><span>${esc(z.z)}</span><span>${z.k}/${z.n} · ${pc(z.k, z.n)}%</span></div><div class="bar thin"><i style="width:${pc(z.k, z.n)}%"></i></div>`).join('')}
     <h3>Por usuario</h3>
-    ${users.map(u => `<div class="row small"><span>${esc(u.usuario)} · ${esc(u.nombre)}</span><span>${u.nv} visitas · ${u.ns} sitios${u.ult ? ' · últ. ' + fmtFecha(u.ult) : ''}</span></div>`).join('')}
+    ${users.map(u => { const ps = paquetes().filter(p => norm(p.asignado_a) === norm(u.nombre)); const ids = new Set(ps.map(p => p.id));
+      const t = (data.sitios || []).filter(s => ids.has(s.paquete) && toca(plan(s))).length;
+      return `<div class="row small"><span>${esc(u.usuario)} · ${esc(u.nombre)}</span><span>${u.nv} visitas${u.ult ? ' · últ. ' + fmtFecha(u.ult) : ''} · <b>${t} tocan</b></span></div>`; }).join('')}
   </section>
 
   <h2 class="zona">Jorge debe contactar (${pend.length})</h2>
@@ -615,9 +728,9 @@ async function demo(action, body) {
     let sitios = [];
     try { const r = await fetch('sitios_seed.json'); sitios = (await r.json()).sitios; } catch {}
     srv = { sitios, visitas: [], asig: {}, usuarios: [
-      { usuario: '1', nombre: 'Dani', pin: '1111', admin: false },
-      { usuario: '2', nombre: 'Juan', pin: '2222', admin: false },
-      { usuario: '3', nombre: 'Jorge', pin: '3333', admin: true }] };
+      { usuario: '1', nombre: 'DANIEL', pin: '1111', admin: false },
+      { usuario: '2', nombre: 'JUAN', pin: '2222', admin: false },
+      { usuario: '3', nombre: 'JORGE', pin: '3333', admin: true }] };
   }
   const save = () => ls.set(K, srv);
   const u = srv.usuarios.find(x => x.usuario === String(auth?.usuario) && x.pin === String(auth?.pin));
@@ -652,7 +765,7 @@ async function demo(action, body) {
           v.tarjetas_dejadas ? 'tarjetas dejadas' : !v.tarjetas_tiene ? 'sin tarjetas' : '', v.boligrafos_dados ? v.boligrafos_dados + ' bolis' : ''].filter(Boolean).join(', ');
         const row = { 'FECHA VISITA': `${f[2]}/${f[1]}/${f[0]}`, 'VISITADOR': srv.usuarios.find(x => x.usuario === v.usuario)?.nombre, 'CLIENTE': s.nombre,
           'TELÉFONO': v.telefono_nuevo || s.telefono || '', 'TIPO CONTACTO': 'VISITA PRESENCIAL', 'ACTUACIÓN REALIZADA': act,
-          'PRÓXIMO PASO': v.jorge_contactar ? 'Jorge contacta: ' + (v.contactar_motivo || '') : '',
+          'PRÓXIMO PASO': [v.jorge_contactar ? 'Jorge contacta: ' + (v.contactar_motivo || '') : '', volverDe(v.volver) ? 'Volver: ' + volverDe(v.volver)[1] : ''].filter(Boolean).join(' · '),
           'OBSERVACIONES': [v.recibido_por && 'Recibe: ' + v.recibido_por, v.email_nuevo && 'Email: ' + v.email_nuevo, v.observaciones].filter(Boolean).join(' · '),
           _rev: v.exportado === 'MODIFICADA' ? 'CORREGIDA' : '' };
         if (body.marcar) v.exportado = hoyISO();

@@ -110,3 +110,22 @@ code { font-size: 13px; background: #eef1f6; padding: 1px 4px; border-radius: 4p
 .sitio.bloq { opacity: .6; border-left-color: #9aa1ad; }
 .alert.gris { background: #eceef2; color: #3a3f48; }
 .seg.users { flex-direction: column; } .seg.users button + button { border-left: 0; border-top: 1px solid var(--line); }
+/* v1.3 */
+.tabs.main { margin-bottom: 12px; }
+.tabs.main button { font-size: 16px; }
+.badge { display: inline-block; min-width: 22px; padding: 1px 7px; border-radius: 99px; background: var(--orange); color: #fff; font-size: 13px; margin-left: 4px; }
+.tabs.main button.on .badge { background: var(--yellow); color: #3a2a00; }
+.quien { font-size: 12.5px; font-weight: 800; letter-spacing: .03em; background: var(--navy); color: #fff; padding: 3px 9px; border-radius: 99px; white-space: nowrap; }
+.quien.libre { background: #e8ebf0; color: var(--muted); font-weight: 600; }
+.card.pkg.hecho { background: var(--green-bg); border-color: #9fd6b4; }
+.card.pkg.hecho strong { color: var(--green); }
+.prio { display: inline-block; font-size: 11.5px; font-weight: 800; width: 20px; height: 20px; line-height: 20px; text-align: center; border-radius: 5px; margin-right: 7px; vertical-align: 2px; background: #e8ebf0; color: #3a3f48; }
+.prio.pA { background: #c62828; color: #fff; } .prio.pB { background: var(--orange); color: #fff; } .prio.pC { background: #9aa1ad; color: #fff; }
+.plan { border-radius: 8px; padding: 9px 11px; margin: 4px 0 6px; background: #eef1f6; }
+.plan.toca { background: var(--orange-bg); color: #8a4100; }
+.plan.fuera { background: #eceef2; color: #3a3f48; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.grid3 button { border: 1px solid #cfd4dc; background: #fff; border-radius: 10px; padding: 11px 4px; font-weight: 600; font-size: 14px; cursor: pointer; min-height: 46px; }
+.grid3 button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
+.grid3 button.rojo.on { background: var(--red); border-color: var(--red); }
+.field.err .grid3 button { border-color: var(--red); }
