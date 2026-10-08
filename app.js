@@ -27,7 +27,7 @@ const pad = n => String(n).padStart(2, '0');
 const hoyISO = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const horaAhora = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const eur = n => Number(n).toLocaleString('es-ES', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' €';
-const fmtFecha = iso => { const p = String(iso || '').split('-'); return p.length === 3 ? `${p[2]}/${p[1]}/${p[0].slice(2)}` : (iso || ''); };
+const fmtFecha = iso => { iso = String(iso || ''); if (iso.includes('T')) { const d = new Date(iso); iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; } const p = iso.split('-'); return p.length === 3 ? `${p[2]}/${p[1]}/${p[0].slice(2)}` : (iso || ''); };
 const uid = () => 'V-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 const nombreUsuario = u => (data?.usuarios || []).find(x => String(x.usuario) === String(u))?.nombre || `Usuario ${u}`;
 
