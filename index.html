@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#13294b">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Rondas">
+<title>Rondas · Taxi Alicante</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header id="top">
+  <button id="btnBack" class="icon" aria-label="Volver" hidden>‹</button>
+  <h1 id="title">Rondas</h1>
+  <button id="btnSync" class="sync" hidden></button>
+  <button id="btnMenu" class="icon" aria-label="Menú" hidden>☰</button>
+</header>
+<nav id="menu" hidden>
+  <button data-go="#/paquetes">Paquetes</button>
+  <button data-go="#/panel" id="menuPanel" hidden>Panel</button>
+  <button id="btnRefresh">Actualizar datos</button>
+  <button id="btnLogout">Salir</button>
+</nav>
+<div id="banner" hidden></div>
+<main id="view"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
