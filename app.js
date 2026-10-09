@@ -1,4 +1,4 @@
-/* RONDAS COMERCIALES · PWA · Sistema RTT · v1 2026-10-03 */
+/* RONDAS COMERCIALES · PWA · Sistema RTT · v1.5 2026-10-09 */
 (() => {
 'use strict';
 
@@ -108,6 +108,15 @@ function textoPlan(p) {
   if (d < 0) return `Tocaba el ${fmtFecha(p.fecha)} (hace ${-d} día${d === -1 ? '' : 's'})`;
   if (d === 0) return 'Toca hoy';
   return `Próxima: ${fmtFecha(p.fecha)} (en ${d} día${d === 1 ? '' : 's'})`;
+}
+/* PMG% del mes cerrado anterior (marcados ÷ pedidos). Viene de pmg_efectividad (número 0-100, o fracción 0-1 si la celda
+   tenía formato %) o, si existe, de pmg_efect_mes_ant (texto ya montado). Vacío = hotel sin pacto → no se muestra. */
+function pmgMesAnt(s) {
+  if (s.pmg_efect_mes_ant) return String(s.pmg_efect_mes_ant);
+  const v = s.pmg_efectividad;
+  if (v === null || v === undefined || v === '' || isNaN(Number(v))) return '';
+  const n = Number(v) <= 1 && Number(v) > 0 ? Number(v) * 100 : Number(v);
+  return n.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + '%';
 }
 const prioTag = s => s.prioridad ? `<span class="prio p${esc(s.prioridad)}">${esc(s.prioridad)}</span>` : '';
 
@@ -450,8 +459,7 @@ function vSitio(id) {
         <dd>${s.pmg_precio != null || s.pmg_precio_festivo != null
           ? `Día ${s.pmg_precio != null ? esc(eur(s.pmg_precio)) : '—'} · Festivo/noche ${s.pmg_precio_festivo != null ? esc(eur(s.pmg_precio_festivo)) : '—'}`
           : '<span class="muted">sin dato</span>'}</dd>
-      ${auth.admin && s.pmg_efectividad != null ? `<dt>Efectividad PMG <span class="muted small">(solo admin)</span></dt>
-        <dd>${esc(s.pmg_efectividad)} % · ${esc(s.pmg_marcados ?? 0)} marcados</dd>` : ''}
+      ${pmgMesAnt(s) ? `<dt>PMG% mes ant.</dt><dd>${esc(pmgMesAnt(s))}</dd>` : ''}
       <dt>Pedidos al mes <span class="muted small">(media 12 meses)</span></dt>
         <dd>${s.pedidos_mes_12m != null ? esc(s.pedidos_mes_12m) : '<span class="muted">sin dato</span>'}</dd>
     </dl>
