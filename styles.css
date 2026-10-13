@@ -129,3 +129,8 @@ code { font-size: 13px; background: #eef1f6; padding: 1px 4px; border-radius: 4p
 .grid3 button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
 .grid3 button.rojo.on { background: var(--red); border-color: var(--red); }
 .field.err .grid3 button { border-color: var(--red); }
+/* v1.6 */
+.fijar { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.fijar input[type=date] { flex: 1; min-width: 0; padding: 8px; border: 1px solid #cfd4dc; border-radius: 8px; background: #fff; font-size: 15px; }
+.fijar .small-btn { margin-top: 0; white-space: nowrap; }
+#ver { position: fixed; right: 8px; bottom: calc(6px + env(safe-area-inset-bottom)); font-size: 11px; color: #8a909b; background: #f4f5f7cc; padding: 1px 6px; border-radius: 6px; pointer-events: none; z-index: 5; }

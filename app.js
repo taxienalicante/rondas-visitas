@@ -1,7 +1,8 @@
-/* RONDAS COMERCIALES · PWA · Sistema RTT · v1.5 2026-10-09 */
+/* RONDAS COMERCIALES · PWA · Sistema RTT · v1.6 2026-10-13 */
 (() => {
 'use strict';
 
+const APP_V = '1.6';
 const API = (window.RONDAS_API || '').trim();
 const DEMO = !API;
 const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', filtro: 'rondas_filtro', filtroHoy: 'rondas_filtro_hoy' };
@@ -18,7 +19,8 @@ let data = ls.get(LS.data, null);      // {sitios, paquetes, visitas, usuarios, 
 let queue = ls.get(LS.queue, []);      // visitas pendientes de enviar
 let syncing = false;
 let syncError = '';
-let volverA = '';   // lista desde la que se abrió la ficha (Hoy, paquete, panel)
+let volverA = '';
+let lastRefresh = 0;   // lista desde la que se abrió la ficha (Hoy, paquete, panel)
 
 const $ = s => document.querySelector(s);
 const view = $('#view');
@@ -74,30 +76,29 @@ function paquetes() {
 }
 const enRonda = s => !s.no_visitar;   // no_visitar = lo lleva Jorge: fuera del % y del punteo
 /* ───────── sistema vivo: cuándo toca cada sitio ───────── */
-const VOLVER = [['2s', '2 semanas', 14], ['1m', '1 mes', 30], ['3m', '3 meses', 90], ['6m', '6 meses', 180], ['fiel', 'Ya es cliente fiel', null], ['no', 'No volver', null]];
-const volverDe = c => VOLVER.find(x => x[0] === c);
-const CAD_DEF = 90;   // si no hay desenlace ni cadencia
+/* "¿Cuándo volver?" es texto libre del comercial: solo sugerencia. Los códigos de la v1.3 (2s, 1m…) se tratan como vacíos. */
+const CODIGOS_V13 = ['2s', '1m', '3m', '6m', 'fiel', 'no'];
+const sugerencia = v => { const t = String(v?.volver || '').trim(); return CODIGOS_V13.includes(t) ? '' : t; };
+const CAD_DEF = 90;   // si no hay fecha fijada ni cadencia
+const fijada = id => (data?.proximas || []).find(x => x.sitio_id === id)?.fecha || '';
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const addDias = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d); };
 const diasEntre = (a, b) => Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 864e5);
 const PRIO = { A: 0, B: 1, C: 2 };
 const ESTADOS = { 'pendiente': 'Pendiente', 'en seguimiento': 'En seguimiento', 'cliente ok': 'Cliente OK', 'no volver': 'No volver', 'esperar': 'Esperar' };
 
-/* Reglas (gana la primera): estado no volver/esperar → fuera · fecha forzada por Hoteles posterior a la última visita →
-   esa fecha · desenlace de la última visita · última visita + cadencia · sin visitas → pendiente (toca ya) */
+/* Reglas (gana la primera): no_visitar / estado no volver / esperar → fuera · fecha fijada por Jorge posterior a la última
+   visita · proxima_visita del maestro posterior a la última visita · última visita + cadencia (90) · sin visitas → toca ya */
 function plan(s) {
   const u = ultimaVisita(s.id);
   const est = norm(s.estado);
   if (s.no_visitar) return { fuera: true, motivo: 'Lo lleva Jorge', u };
   if (est === 'no volver') return { fuera: true, motivo: 'No volver (Hoteles)', u };
   if (est === 'esperar') return { fuera: true, motivo: 'En espera (Hoteles)', u };
+  const fj = fijada(s.id);
+  if (fj && (!u || fj > u.fecha)) return { fecha: fj, motivo: 'fecha fijada por Jorge', fijadaJorge: true, u };
   if (s.proxima_visita && (!u || s.proxima_visita > u.fecha)) return { fecha: s.proxima_visita, motivo: 'fecha fijada por Hoteles', u };
-  if (u && u.volver === 'no') return { fuera: true, motivo: 'No volver (visita ' + fmtFecha(u.fecha) + ')', u };
-  if (u && volverDe(u.volver)) {
-    const dias = volverDe(u.volver)[2] || Number(s.cadencia_dias) || 180;
-    return { fecha: addDias(u.fecha, dias), motivo: volverDe(u.volver)[1].toLowerCase(), u };
-  }
-  if (u) return { fecha: addDias(u.fecha, Number(s.cadencia_dias) || CAD_DEF), motivo: 'cada ' + (Number(s.cadencia_dias) || CAD_DEF) + ' días', u };
+  if (u) return { fecha: addDias(u.fecha, Number(s.cadencia_dias) || CAD_DEF), motivo: 'cada ' + (Number(s.cadencia_dias) || CAD_DEF) + ' días (sin fecha fijada)', sinFijar: true, u };
   return { pendiente: true, motivo: 'sin visitar', u };
 }
 const toca = p => !p.fuera && (p.pendiente || p.fecha <= hoyISO());
@@ -112,6 +113,7 @@ function textoPlan(p) {
 /* PMG% del mes cerrado anterior (marcados ÷ pedidos). Viene de pmg_efectividad (número 0-100, o fracción 0-1 si la celda
    tenía formato %) o, si existe, de pmg_efect_mes_ant (texto ya montado). Vacío = hotel sin pacto → no se muestra. */
 function pmgMesAnt(s) {
+  if (!s.pacto_pmg) return '';
   if (s.pmg_efect_mes_ant) return String(s.pmg_efect_mes_ant);
   const v = s.pmg_efectividad;
   if (v === null || v === undefined || v === '' || isNaN(Number(v))) return '';
@@ -179,7 +181,8 @@ async function refresh({ silent = false } = {}) {
   if (!navigator.onLine && !DEMO) { if (!silent) toast('Sin conexión'); return; }
   try {
     const j = await call('bootstrap');
-    data = { sitios: j.sitios, paquetes: j.paquetes, visitas: j.visitas, usuarios: j.usuarios, ts: j.ts };
+    data = { sitios: j.sitios, paquetes: j.paquetes, visitas: j.visitas, usuarios: j.usuarios, proximas: j.proximas || [], ts: j.ts };
+    lastRefresh = Date.now();
     auth = { ...auth, ...j.user }; ls.set(LS.auth, auth);
     ls.set(LS.data, data);
     if (!silent) toast('Datos actualizados');
@@ -442,7 +445,8 @@ function vSitio(id) {
     ${s.no_visitar ? '<div class="alert gris">⛔ No visitar en ronda · lo lleva Jorge personalmente</div>' : ''}
     <div class="plan ${pl.fuera ? 'fuera' : toca(pl) ? 'toca' : ''}">
       <b>${esc(textoPlan(pl))}</b>${!pl.fuera && !pl.pendiente ? `<span class="muted small"> · ${esc(pl.motivo)}</span>` : ''}
-      ${pl.u ? `<div class="small muted">Última visita: ${fmtFecha(pl.u.fecha)} · ${esc(nombreUsuario(pl.u.usuario))}</div>` : ''}
+      ${pl.u ? `<div class="small muted">Última visita: ${fmtFecha(pl.u.fecha)} · ${esc(nombreUsuario(pl.u.usuario))}${sugerencia(pl.u) ? ` · sugiere: «${esc(sugerencia(pl.u))}»` : ''}</div>` : ''}
+      ${auth.admin && !s.no_visitar ? `<div class="fijar"><input type="date" id="fjFecha" value="${esc(fijada(s.id))}"><button class="small-btn" id="fjBtn">Fijar próxima visita</button></div>` : ''}
     </div>
     <dl>
       ${s.prioridad || s.estado ? `<dt>Prioridad · Estado</dt><dd>${s.prioridad ? prioTag(s) : ''}${esc(ESTADOS[norm(s.estado)] || s.estado || '—')}</dd>` : ''}
@@ -468,6 +472,17 @@ function vSitio(id) {
   ${s.no_visitar && !auth.admin ? '' : `<a class="primary big block" href="#/visita/${s.id}">Registrar visita</a>`}
   <h2 class="zona">Visitas (${vs.length})</h2>
   ${vs.length ? vs.map(v => tarjetaVisita(v)).join('') : '<p class="empty">Aún sin visitas</p>'}`;
+  const fb = $('#fjBtn');
+  if (fb) fb.onclick = () => fijarProxima(s.id, $('#fjFecha').value);
+}
+
+async function fijarProxima(sitioId, fecha) {
+  return online(async () => {
+    const j = await call('fijarProxima', { sitio_id: sitioId, fecha });
+    data.proximas = j.proximas; ls.set(LS.data, data);
+    toast(fecha ? 'Próxima visita: ' + fmtFecha(fecha) : 'Fecha quitada');
+    rerender();
+  });
 }
 
 function tarjetaVisita(v, conSitio) {
@@ -485,7 +500,7 @@ function tarjetaVisita(v, conSitio) {
     ${v.recibido_por ? `<div class="small">Recibe: ${esc(v.recibido_por)}</div>` : ''}
     <div class="small muted">${items}</div>
     ${v.jorge_contactar ? `<div class="tag ${v.contactado ? '' : 'warn'}">Jorge contacta${v.contactar_motivo ? ': ' + esc(v.contactar_motivo) : ''}${v.contactado ? ' ✓ hecho' : ''}</div>` : ''}
-    ${volverDe(v.volver) ? `<div class="small">Volver: <b>${esc(volverDe(v.volver)[1])}</b></div>` : ''}
+    ${sugerencia(v) ? `<div class="small">Volver: <b>${esc(sugerencia(v))}</b></div>` : ''}
     ${v.observaciones ? `<p class="small">${esc(v.observaciones)}</p>` : ''}
     ${puedo ? `<a class="small link" href="#/visita/${v.sitio_id}/${encodeURIComponent(v.id)}">Editar</a>` : ''}
   </div>`;
@@ -541,8 +556,8 @@ function vForm(sitioId, visitaId) {
     <label>Email ${c.email ? '<span class="muted small">(solo si el de la ficha está mal)</span>' : '<span class="tag warn">la ficha no lo tiene</span>'}
       <input name="email_nuevo" type="email" inputmode="email" value="${esc(v.email_nuevo)}" autocomplete="off"></label>
     <label>Observaciones <textarea name="observaciones" rows="3">${esc(v.observaciones)}</textarea></label>
-    <div class="field" id="fVolver"><span>¿Cuándo volver? *</span>
-      <div class="grid3" id="segVolver">${VOLVER.map(([c, t]) => `<button type="button" data-v="${c}" class="${v.volver === c ? 'on' : ''}${c === 'no' ? ' rojo' : ''}">${t}</button>`).join('')}</div></div>
+    <label>¿Cuándo volver? <span class="muted small">(opcional · sugerencia para Jorge)</span>
+      <input name="volver" value="${esc(sugerencia(v))}" maxlength="140" placeholder="Ej.: en dos semanas, por la mañana, cuando esté la jefa…" autocomplete="off"></label>
     <button class="primary big" type="submit">Guardar visita</button>
     ${prev ? '<button type="button" class="danger" id="btnDel">Borrar visita</button>' : ''}
   </form>`;
@@ -555,11 +570,6 @@ function vForm(sitioId, visitaId) {
     g.closest('.field').classList.remove('err');
     if (g.dataset.k === 'jorge_contactar') $('#motivoBox').hidden = !v.jorge_contactar;
   });
-  $('#segVolver').onclick = e => {
-    const b = e.target.closest('button'); if (!b) return;
-    v.volver = b.dataset.v; [...$('#segVolver').children].forEach(x => x.classList.toggle('on', x === b));
-    $('#fVolver').classList.remove('err');
-  };
   f.querySelector('.stepper').onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     const i = f.boligrafos_dados; i.value = Math.max(0, (Number(i.value) || 0) + Number(b.dataset.d));
@@ -572,14 +582,13 @@ function vForm(sitioId, visitaId) {
 
   f.onsubmit = e => {
     e.preventDefault();
-    ['fecha', 'hora', 'recibido_por', 'contactar_motivo', 'telefono_nuevo', 'email_nuevo', 'observaciones']
+    ['fecha', 'hora', 'recibido_por', 'contactar_motivo', 'telefono_nuevo', 'email_nuevo', 'observaciones', 'volver']
       .forEach(k => { v[k] = f[k].value.trim(); });
     v.boligrafos_dados = Math.max(0, parseInt(f.boligrafos_dados.value, 10) || 0);
     const faltan = ['expositor_puesto', 'planos_tiene', 'tarjetas_tiene'].filter(k => v[k] !== true && v[k] !== false);
     f.querySelectorAll('.yn').forEach(g => g.closest('.field').classList.toggle('err', faltan.includes(g.dataset.k)));
     if (!v.fecha || !v.hora) return toast('Falta fecha u hora');
     if (faltan.length) return toast('Marca Sí/No en los campos con *');
-    if (!volverDe(v.volver)) { $('#fVolver').classList.add('err'); $('#fVolver').scrollIntoView({ block: 'center' }); return toast('Elige cuándo volver'); }
     if (v.email_nuevo && !/^\S+@\S+\.\S+$/.test(v.email_nuevo)) return toast('Email no válido');
     if (!v.jorge_contactar) v.contactar_motivo = '';
     guardar(v, prev ? 'Visita corregida' : 'Visita guardada');
@@ -617,6 +626,8 @@ function vPanel() {
   const ult = [...vs].sort((a, b) => (b.fecha + b.hora).localeCompare(a.fecha + a.hora)).slice(0, 15);
   const sinExp = vs.filter(v => !v.exportado || v.exportado === 'MODIFICADA').length;
   const nombres = (data.usuarios || []).map(u => u.nombre);
+  const porFijar = (data.sitios || []).map(s => ({ s, p: plan(s) })).filter(x => x.p.sinFijar)
+    .sort((a, b) => b.p.u.fecha.localeCompare(a.p.u.fecha));
 
   view.innerHTML = `
   <section class="card">
@@ -637,6 +648,13 @@ function vPanel() {
       <div class="small muted">${[fmtTel(c.telefono).txt, c.email, v.recibido_por && 'Recibe: ' + v.recibido_por].filter(Boolean).map(esc).join(' · ')}</div>
       <button class="small-btn" data-hecho="${esc(v.id)}">Marcar contactado</button>
     </div>`; }).join('') : '<p class="empty">Nada pendiente</p>'}
+
+  <h2 class="zona">Fijar próxima visita (${porFijar.length})</h2>
+  ${porFijar.length ? porFijar.map(({ s, p }) => `<div class="card visita">
+      <div class="row"><a href="#/sitio/${s.id}"><strong>${prioTag(s)}${esc(s.nombre)}</strong></a><span class="muted small">${fmtFecha(p.u.fecha)} · ${esc(nombreUsuario(p.u.usuario))}</span></div>
+      <div class="small">${sugerencia(p.u) ? 'Sugiere: <b>' + esc(sugerencia(p.u)) + '</b>' : '<span class="muted">sin sugerencia</span>'}</div>
+      <div class="fijar"><input type="date" data-fjf="${s.id}" value="${p.fecha}"><button class="small-btn" data-fj="${s.id}">Fijar</button></div>
+    </div>`).join('') : '<p class="empty">Todo fijado</p>'}
 
   <h2 class="zona">Exportar al DIARIO</h2>
   <section class="card">
@@ -676,6 +694,11 @@ function vPanel() {
     const j = await call('contactado', { id: b.dataset.hecho, valor: true });
     data.visitas = j.visitas; ls.set(LS.data, data); toast('Marcado'); vPanel();
   }));
+  view.querySelectorAll('[data-fj]').forEach(b => b.onclick = () => {
+    const f = view.querySelector(`[data-fjf="${b.dataset.fj}"]`).value;
+    if (!f) return toast('Elige una fecha');
+    fijarProxima(b.dataset.fj, f);
+  });
   view.querySelectorAll('[data-paq]').forEach(sel => sel.onchange = () => online(async () => {
     const j = await call('asignar', { paquete: sel.dataset.paq, asignado_a: sel.value });
     data.paquetes = j.paquetes; ls.set(LS.data, data); toast('Asignado');
@@ -749,7 +772,7 @@ async function demo(action, body) {
   const vivas = () => srv.visitas.filter(v => !v.borrado);
   switch (action) {
     case 'login': return { ok: true, user };
-    case 'bootstrap': save(); return { ok: true, user, sitios: srv.sitios, paquetes: paqs(), visitas: vivas(),
+    case 'bootstrap': save(); return { ok: true, user, sitios: srv.sitios, paquetes: paqs(), visitas: vivas(), proximas: srv.prox || [],
       usuarios: srv.usuarios.map(x => ({ usuario: x.usuario, nombre: x.nombre })), ts: new Date().toISOString() };
     case 'sync': {
       const res = body.visitas.map(v => {
@@ -763,6 +786,7 @@ async function demo(action, body) {
       save(); return { ok: true, resultados: res, visitas: vivas() };
     }
     case 'asignar': srv.asig[body.paquete] = body.asignado_a; save(); return { ok: true, paquetes: paqs() };
+    case 'fijarProxima': srv.prox = (srv.prox || []).filter(x => x.sitio_id !== body.sitio_id).concat(body.fecha ? [{ sitio_id: body.sitio_id, fecha: body.fecha }] : []); save(); return { ok: true, proximas: srv.prox };
     case 'contactado': srv.visitas.find(v => v.id === body.id).contactado = body.valor; save(); return { ok: true, visitas: vivas() };
     case 'cargarSeed': srv.sitios = body.seed.sitios || body.seed; save(); return { ok: true, total: srv.sitios.length };
     case 'exportar': {
@@ -773,7 +797,7 @@ async function demo(action, body) {
           v.tarjetas_dejadas ? 'tarjetas dejadas' : !v.tarjetas_tiene ? 'sin tarjetas' : '', v.boligrafos_dados ? v.boligrafos_dados + ' bolis' : ''].filter(Boolean).join(', ');
         const row = { 'FECHA VISITA': `${f[2]}/${f[1]}/${f[0]}`, 'VISITADOR': srv.usuarios.find(x => x.usuario === v.usuario)?.nombre, 'CLIENTE': s.nombre,
           'TELÉFONO': v.telefono_nuevo || s.telefono || '', 'TIPO CONTACTO': 'VISITA PRESENCIAL', 'ACTUACIÓN REALIZADA': act,
-          'PRÓXIMO PASO': [v.jorge_contactar ? 'Jorge contacta: ' + (v.contactar_motivo || '') : '', volverDe(v.volver) ? 'Volver: ' + volverDe(v.volver)[1] : ''].filter(Boolean).join(' · '),
+          'PRÓXIMO PASO': [v.jorge_contactar ? 'Jorge contacta: ' + (v.contactar_motivo || '') : '', sugerencia(v) ? 'Volver: ' + sugerencia(v) : ''].filter(Boolean).join(' · '),
           'OBSERVACIONES': [v.recibido_por && 'Recibe: ' + v.recibido_por, v.email_nuevo && 'Email: ' + v.email_nuevo, v.observaciones].filter(Boolean).join(' · '),
           _rev: v.exportado === 'MODIFICADA' ? 'CORREGIDA' : '' };
         if (body.marcar) v.exportado = hoyISO();
@@ -786,7 +810,26 @@ async function demo(action, body) {
 }
 
 /* ───────── arranque ───────── */
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+/* Actualización automática: el código nuevo llega solo (service worker) y los datos se refrescan al abrir y al volver a la app */
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    const check = () => reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+    setInterval(check, 30 * 60000);
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return;               // primera instalación: nada que avisar
+    if (/^#\/visita/.test(location.hash)) {  // no cortar un formulario a medias
+      const b = $('#banner'); b.hidden = false; b.textContent = 'Nueva versión disponible · se aplicará al guardar';
+      window.addEventListener('hashchange', () => location.reload(), { once: true });
+    } else { toast('Nueva versión de la app'); setTimeout(() => location.reload(), 800); }
+  });
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && auth && Date.now() - lastRefresh > 2 * 60000) sync({ silent: true }).then(() => refresh({ silent: true }));
+});
+const ver = document.createElement('div'); ver.id = 'ver'; ver.textContent = 'v' + APP_V; document.body.appendChild(ver);
 route();
 if (auth && data) { sync({ silent: true }).then(() => refresh({ silent: true })); }
 })();
