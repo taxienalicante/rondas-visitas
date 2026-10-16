@@ -1,12 +1,12 @@
-/* RONDAS COMERCIALES · PWA · Sistema RTT · v1.6 2026-10-13 */
+/* RONDAS COMERCIALES · PWA · Sistema RTT · v1.7 2026-10-15 */
 (() => {
 'use strict';
 
-const APP_V = '1.6';
+const APP_V = '1.7';
 const API = (window.RONDAS_API || '').trim();
 const DEMO = !API;
 const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', filtro: 'rondas_filtro', filtroHoy: 'rondas_filtro_hoy' };
-const TIPOS = { hotel: 'Hotel', clinica: 'Clínica', residencia: 'Residencia', negocio: 'Negocio', ambulatorio: 'Ambulatorio' };
+const TIPOS = { hotel: 'Hotel', clinica: 'Clínica', residencia: 'Residencia', negocio: 'Negocio', ambulatorio: 'Ambulatorio', restaurante: 'Restaurante', otro: 'Otro' };
 
 /* ───────── estado ───────── */
 const ls = {
@@ -120,6 +120,19 @@ function pmgMesAnt(s) {
   const n = Number(v) <= 1 && Number(v) > 0 ? Number(v) * 100 : Number(v);
   return n.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + '%';
 }
+/* ───────── sitios nuevos encontrados en la calle (visita con sitio_nuevo, id provisional NUEVO-xxxxx) ───────── */
+const TIPOS_NUEVO = [['hotel', 'Hotel'], ['clinica', 'Clínica'], ['residencia', 'Residencia'], ['restaurante', 'Restaurante'], ['negocio', 'Negocio / empresa'], ['otro', 'Otro']];
+const esNuevoId = id => /^NUEVO-/.test(String(id || ''));
+const idNuevo = () => 'NUEVO-' + Math.random().toString(36).slice(2, 7).toUpperCase();
+function pseudoSitio(id) {   // ficha mínima a partir de la última visita del sitio nuevo
+  const v = visitas().filter(x => x.sitio_id === id).sort((a, b) => (b.fecha + b.hora).localeCompare(a.fecha + a.hora))[0];
+  if (!v) return null;
+  return { id, nuevo: true, nombre: v.nuevo_nombre || 'Sitio nuevo', direccion: v.nuevo_direccion || '', tipo: v.nuevo_tipo || 'otro',
+    telefono: v.nuevo_telefono || '', email: '', paquete: '', zona: '', situacion: 'nuevo', recomendacion: '' };
+}
+const nombreSitio = id => sitio(id)?.nombre || pseudoSitio(id)?.nombre || id;
+const btnNuevo = () => `<a class="nuevo-btn" href="#/visita/nuevo">➕ Sitio nuevo (no está en la lista)</a>`;
+
 const prioTag = s => s.prioridad ? `<span class="prio p${esc(s.prioridad)}">${esc(s.prioridad)}</span>` : '';
 
 function visitadosSet() { return new Set(visitas().map(v => v.sitio_id)); }
@@ -330,6 +343,7 @@ function vHoy() {
     </a>`;
   view.innerHTML = `
   ${tabs('hoy')}
+  ${btnNuevo()}
   <div class="seg tabs" id="filHoy">
     <button data-v="mios" class="${mios ? 'on' : ''}" ${tengo ? '' : 'disabled'}>Mis paquetes</button>
     <button data-v="todos" class="${mios ? '' : 'on'}">Todos</button>
@@ -355,6 +369,7 @@ function vPaquetes() {
 
   view.innerHTML = `
   ${tabs('paq')}
+  ${btnNuevo()}
   <div class="search"><input id="q" type="search" placeholder="Buscar sitio en todos los paquetes…" autocomplete="off"></div>
   <div id="res"></div>
   <div class="seg tabs" id="fil">
@@ -422,6 +437,7 @@ function vPaquete(id) {
 
 /* ───────── 4 · FICHA DEL SITIO ───────── */
 function vSitio(id) {
+  if (esNuevoId(id)) return vSitioNuevo(id);
   const s = sitio(id);
   if (!s) { location.hash = '#/paquetes'; return; }
   header(s.nombre, volverA || '#/paquete/' + encodeURIComponent(s.paquete));
@@ -476,6 +492,24 @@ function vSitio(id) {
   if (fb) fb.onclick = () => fijarProxima(s.id, $('#fjFecha').value);
 }
 
+function vSitioNuevo(id) {
+  const s = pseudoSitio(id);
+  if (!s) { location.hash = '#/hoy'; return; }
+  header(s.nombre, volverA || '#/hoy');
+  const vs = visitasDe(id);
+  view.innerHTML = `
+  <section class="card ficha">
+    <div class="chips"><span class="chip nuevo">SITIO NUEVO · por revisar</span><span class="chip">${esc(TIPOS[s.tipo] || s.tipo)}</span></div>
+    <dl>
+      <dt>Dirección / zona</dt><dd data-copy="${esc(s.direccion)}">${esc(s.direccion) || '—'}</dd>
+      <dt>Teléfono</dt><dd>${s.telefono ? esc(fmtTel(s.telefono).txt) : '<span class="muted">sin dato</span>'}</dd>
+    </dl>
+    <p class="small muted">Dado de alta en la calle. Jorge le asignará ficha definitiva.</p>
+  </section>
+  <h2 class="zona">Visitas (${vs.length})</h2>
+  ${vs.map(v => tarjetaVisita(v)).join('')}`;
+}
+
 async function fijarProxima(sitioId, fecha) {
   return online(async () => {
     const j = await call('fijarProxima', { sitio_id: sitioId, fecha });
@@ -487,7 +521,7 @@ async function fijarProxima(sitioId, fecha) {
 
 function tarjetaVisita(v, conSitio) {
   const puedo = String(v.usuario) === String(auth.usuario) || auth.admin;
-  const s = conSitio ? sitio(v.sitio_id) : null;
+  const s = conSitio ? (sitio(v.sitio_id) || pseudoSitio(v.sitio_id) || { nombre: v.sitio_id }) : null;
   const items = [
     v.expositor_puesto ? 'expositor puesto' : 'sin expositor',
     v.planos_dejados ? 'planos dejados' : v.planos_tiene ? 'tenía planos' : 'sin planos',
@@ -508,19 +542,23 @@ function tarjetaVisita(v, conSitio) {
 
 /* ───────── 5 · FORMULARIO DE VISITA ───────── */
 function vForm(sitioId, visitaId) {
-  const s = sitio(sitioId);
+  const alta = sitioId === 'nuevo';
+  const nuevo = alta || esNuevoId(sitioId);
+  if (alta) sitioId = idNuevo();
+  const s = nuevo ? (pseudoSitio(sitioId) || { id: sitioId, nombre: 'Sitio nuevo', telefono: '', email: '' }) : sitio(sitioId);
   if (!s) { location.hash = '#/paquetes'; return; }
   const prev = visitaId ? visitas().find(v => v.id === visitaId) : null;
   if (visitaId && !prev) { location.hash = '#/sitio/' + sitioId; return; }
   if (prev && String(prev.usuario) !== String(auth.usuario) && !auth.admin) { location.hash = '#/sitio/' + sitioId; return; }
   if (s.no_visitar && !auth.admin) { toast('No visitar en ronda: lo lleva Jorge'); location.hash = '#/sitio/' + sitioId; return; }
-  header(prev ? 'Editar visita' : 'Nueva visita', '#/sitio/' + sitioId);
+  header(prev ? 'Editar visita' : alta ? 'Sitio nuevo' : 'Nueva visita', alta ? (volverA || '#/hoy') : '#/sitio/' + sitioId);
 
   const v = prev ? { ...prev } : {
     id: uid(), sitio_id: s.id, usuario: auth.usuario, fecha: hoyISO(), hora: horaAhora(),
     recibido_por: '', expositor_puesto: null, planos_tiene: null, planos_dejados: false,
     tarjetas_tiene: null, tarjetas_dejadas: false, boligrafos_dados: 0, jorge_contactar: false,
-    contactar_motivo: '', telefono_nuevo: '', email_nuevo: '', observaciones: '', volver: ''
+    contactar_motivo: '', telefono_nuevo: '', email_nuevo: '', observaciones: '', volver: '',
+    sitio_nuevo: nuevo, nuevo_nombre: '', nuevo_direccion: '', nuevo_tipo: '', nuevo_telefono: ''
   };
   const c = contacto(s);
   const sinTel = !c.telefono || fmtTel(c.telefono).ext;
@@ -531,9 +569,18 @@ function vForm(sitioId, visitaId) {
         <button type="button" data-v="0" class="${v[k] === false ? 'on' : ''}">No</button>
       </div></div>`;
 
+  const bloqueNuevo = nuevo ? `
+    <fieldset class="alta"><legend>➕ Datos del sitio nuevo</legend>
+      <label>Nombre * <input name="nuevo_nombre" value="${esc(v.nuevo_nombre)}" maxlength="120" autocomplete="off"></label>
+      <label>Dirección / zona * <input name="nuevo_direccion" value="${esc(v.nuevo_direccion)}" maxlength="160" autocomplete="off"></label>
+      <label>Tipo <select name="nuevo_tipo">${TIPOS_NUEVO.map(([k, t]) => `<option value="${k}" ${v.nuevo_tipo === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label>Teléfono <span class="muted small">(opcional)</span> <input name="nuevo_telefono" type="tel" inputmode="tel" value="${esc(v.nuevo_telefono)}" autocomplete="off"></label>
+    </fieldset>` : '';
+
   view.innerHTML = `
   <form id="fV" class="card form" novalidate>
-    <p class="sitio-n">${esc(s.nombre)}</p>
+    ${nuevo ? '' : `<p class="sitio-n">${esc(s.nombre)}</p>`}
+    ${bloqueNuevo}
     <p class="muted small">${esc(nombreUsuario(v.usuario))} (usuario ${esc(v.usuario)})</p>
     <div class="two">
       <label>Fecha <input name="fecha" type="date" value="${esc(v.fecha)}" required></label>
@@ -551,18 +598,19 @@ function vForm(sitioId, visitaId) {
       ${yn('jorge_contactar', 'Jorge debe contactar')}
       <label id="motivoBox" ${v.jorge_contactar ? '' : 'hidden'}>Motivo <input name="contactar_motivo" value="${esc(v.contactar_motivo)}" maxlength="140" placeholder="Ej.: quieren Foxtrot, preguntan tarifa pactada…"></label>
     </fieldset>
-    <label>Teléfono ${sinTel ? '<span class="tag warn">la ficha no lo tiene</span>' : '<span class="muted small">(solo si el de la ficha está mal)</span>'}
-      <input name="telefono_nuevo" type="tel" inputmode="tel" value="${esc(v.telefono_nuevo)}" autocomplete="off"></label>
+    ${nuevo ? '' : `<label>Teléfono ${sinTel ? '<span class="tag warn">la ficha no lo tiene</span>' : '<span class="muted small">(solo si el de la ficha está mal)</span>'}
+      <input name="telefono_nuevo" type="tel" inputmode="tel" value="${esc(v.telefono_nuevo)}" autocomplete="off"></label>`}
     <label>Email ${c.email ? '<span class="muted small">(solo si el de la ficha está mal)</span>' : '<span class="tag warn">la ficha no lo tiene</span>'}
       <input name="email_nuevo" type="email" inputmode="email" value="${esc(v.email_nuevo)}" autocomplete="off"></label>
     <label>Observaciones <textarea name="observaciones" rows="3">${esc(v.observaciones)}</textarea></label>
-    <label>¿Cuándo volver? <span class="muted small">(opcional · sugerencia para Jorge)</span>
+    <label>¿Cuándo volver? <span class="muted small">(sugerencia)</span>
       <input name="volver" value="${esc(sugerencia(v))}" maxlength="140" placeholder="Ej.: en dos semanas, por la mañana, cuando esté la jefa…" autocomplete="off"></label>
     <button class="primary big" type="submit">Guardar visita</button>
     ${prev ? '<button type="button" class="danger" id="btnDel">Borrar visita</button>' : ''}
   </form>`;
 
   const f = $('#fV');
+  f.addEventListener('input', e => e.target.classList.remove('err'));
   f.querySelectorAll('.yn').forEach(g => g.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     v[g.dataset.k] = b.dataset.v === '1';
@@ -582,8 +630,14 @@ function vForm(sitioId, visitaId) {
 
   f.onsubmit = e => {
     e.preventDefault();
-    ['fecha', 'hora', 'recibido_por', 'contactar_motivo', 'telefono_nuevo', 'email_nuevo', 'observaciones', 'volver']
-      .forEach(k => { v[k] = f[k].value.trim(); });
+    ['fecha', 'hora', 'recibido_por', 'contactar_motivo', 'telefono_nuevo', 'email_nuevo', 'observaciones', 'volver',
+      'nuevo_nombre', 'nuevo_direccion', 'nuevo_tipo', 'nuevo_telefono']
+      .forEach(k => { if (f[k]) v[k] = f[k].value.trim(); });
+    if (nuevo) {
+      const falta = ['nuevo_nombre', 'nuevo_direccion'].filter(k => !v[k]);
+      falta.forEach(k => f[k].classList.add('err'));
+      if (falta.length) { f[falta[0]].focus(); return toast('Falta el nombre o la dirección del sitio nuevo'); }
+    }
     v.boligrafos_dados = Math.max(0, parseInt(f.boligrafos_dados.value, 10) || 0);
     const faltan = ['expositor_puesto', 'planos_tiene', 'tarjetas_tiene'].filter(k => v[k] !== true && v[k] !== false);
     f.querySelectorAll('.yn').forEach(g => g.closest('.field').classList.toggle('err', faltan.includes(g.dataset.k)));
@@ -621,6 +675,7 @@ function vPanel() {
     const mv = vs.filter(v => String(v.usuario) === String(u.usuario));
     return { ...u, nv: mv.length, ns: new Set(mv.map(v => v.sitio_id)).size, ult: mv.map(v => v.fecha).sort().pop() };
   });
+  const nuevos = vs.filter(v => v.sitio_nuevo && !v.revisado).sort((a, b) => b.fecha.localeCompare(a.fecha));
   const pend = vs.filter(v => v.jorge_contactar && !v.contactado).sort((a, b) => b.fecha.localeCompare(a.fecha));
   const corr = vs.filter(v => v.telefono_nuevo || v.email_nuevo).sort((a, b) => b.fecha.localeCompare(a.fecha));
   const ult = [...vs].sort((a, b) => (b.fecha + b.hora).localeCompare(a.fecha + a.hora)).slice(0, 15);
@@ -639,6 +694,15 @@ function vPanel() {
       const t = (data.sitios || []).filter(s => ids.has(s.paquete) && toca(plan(s))).length;
       return `<div class="row small"><span>${esc(u.usuario)} · ${esc(u.nombre)}</span><span>${u.nv} visitas${u.ult ? ' · últ. ' + fmtFecha(u.ult) : ''} · <b>${t} tocan</b></span></div>`; }).join('')}
   </section>
+
+  <h2 class="zona">Sitios nuevos por revisar (${nuevos.length})</h2>
+  ${nuevos.length ? nuevos.map(v => `<div class="card visita nuevo-rev">
+      <div class="row"><strong>➕ ${esc(v.nuevo_nombre || v.sitio_id)}</strong><span class="muted small">${fmtFecha(v.fecha)} · ${esc(nombreUsuario(v.usuario))}</span></div>
+      <div class="small">${esc(TIPOS[v.nuevo_tipo] || v.nuevo_tipo || '')} · ${esc(v.nuevo_direccion)}${v.nuevo_telefono ? ' · ' + esc(v.nuevo_telefono) : ''}</div>
+      ${v.observaciones ? `<div class="small muted">${esc(v.observaciones)}</div>` : ''}
+      <div class="fijar"><input type="text" placeholder="ID definitivo (S…) · opcional" data-defid="${esc(v.id)}" autocapitalize="characters">
+        <button class="small-btn" data-rev="${esc(v.id)}">Revisado</button></div>
+    </div>`).join('') + '<button class="secondary" id="btnNuevosCSV">Descargar CSV para Hoteles</button>' : '<p class="empty">Ninguno</p>'}
 
   <h2 class="zona">Jorge debe contactar (${pend.length})</h2>
   ${pend.length ? pend.map(v => { const s = sitio(v.sitio_id) || {}; const c = contacto(s.id ? s : { id: v.sitio_id });
@@ -694,6 +758,17 @@ function vPanel() {
     const j = await call('contactado', { id: b.dataset.hecho, valor: true });
     data.visitas = j.visitas; ls.set(LS.data, data); toast('Marcado'); vPanel();
   }));
+  view.querySelectorAll('[data-rev]').forEach(b => b.onclick = () => online(async () => {
+    const def = view.querySelector(`[data-defid="${b.dataset.rev}"]`).value.trim().toUpperCase();
+    if (def && !/^S\d{3,}$/.test(def)) return toast('El ID definitivo debe ser tipo S215');
+    if (def && !sitio(def)) return toast(def + ' no está en el maestro cargado');
+    const j = await call('revisarNuevo', { id: b.dataset.rev, sitio_id: def });
+    data.visitas = j.visitas; ls.set(LS.data, data); toast(def ? 'Visita enlazada a ' + def : 'Marcado como revisado'); vPanel();
+  }));
+  const bn = $('#btnNuevosCSV');
+  if (bn) bn.onclick = () => descargarCSV(`SITIOS_NUEVOS_${hoyISO()}.csv`, ['id_provisional', 'nombre', 'direccion', 'tipo', 'telefono', 'observaciones', 'fecha', 'visitador'],
+    nuevos.map(v => ({ id_provisional: v.sitio_id, nombre: v.nuevo_nombre, direccion: v.nuevo_direccion, tipo: TIPOS[v.nuevo_tipo] || v.nuevo_tipo,
+      telefono: v.nuevo_telefono, observaciones: v.observaciones, fecha: v.fecha, visitador: nombreUsuario(v.usuario) })));
   view.querySelectorAll('[data-fj]').forEach(b => b.onclick = () => {
     const f = view.querySelector(`[data-fjf="${b.dataset.fj}"]`).value;
     if (!f) return toast('Elige una fecha');
@@ -786,6 +861,7 @@ async function demo(action, body) {
       save(); return { ok: true, resultados: res, visitas: vivas() };
     }
     case 'asignar': srv.asig[body.paquete] = body.asignado_a; save(); return { ok: true, paquetes: paqs() };
+    case 'revisarNuevo': { const v = srv.visitas.find(x => x.id === body.id); v.revisado = true; if (body.sitio_id) v.sitio_id = body.sitio_id; save(); return { ok: true, visitas: vivas() }; }
     case 'fijarProxima': srv.prox = (srv.prox || []).filter(x => x.sitio_id !== body.sitio_id).concat(body.fecha ? [{ sitio_id: body.sitio_id, fecha: body.fecha }] : []); save(); return { ok: true, proximas: srv.prox };
     case 'contactado': srv.visitas.find(v => v.id === body.id).contactado = body.valor; save(); return { ok: true, visitas: vivas() };
     case 'cargarSeed': srv.sitios = body.seed.sitios || body.seed; save(); return { ok: true, total: srv.sitios.length };
@@ -795,7 +871,7 @@ async function demo(action, body) {
         const f = v.fecha.split('-');
         const act = ['Expositor ' + (v.expositor_puesto ? 'puesto' : 'NO puesto'), v.planos_dejados ? 'planos dejados' : !v.planos_tiene ? 'sin planos' : '',
           v.tarjetas_dejadas ? 'tarjetas dejadas' : !v.tarjetas_tiene ? 'sin tarjetas' : '', v.boligrafos_dados ? v.boligrafos_dados + ' bolis' : ''].filter(Boolean).join(', ');
-        const row = { 'FECHA VISITA': `${f[2]}/${f[1]}/${f[0]}`, 'VISITADOR': srv.usuarios.find(x => x.usuario === v.usuario)?.nombre, 'CLIENTE': s.nombre,
+        const row = { 'FECHA VISITA': `${f[2]}/${f[1]}/${f[0]}`, 'VISITADOR': srv.usuarios.find(x => x.usuario === v.usuario)?.nombre, 'CLIENTE': s.nombre || (v.nuevo_nombre ? v.nuevo_nombre + ' (NUEVO)' : v.sitio_id),
           'TELÉFONO': v.telefono_nuevo || s.telefono || '', 'TIPO CONTACTO': 'VISITA PRESENCIAL', 'ACTUACIÓN REALIZADA': act,
           'PRÓXIMO PASO': [v.jorge_contactar ? 'Jorge contacta: ' + (v.contactar_motivo || '') : '', sugerencia(v) ? 'Volver: ' + sugerencia(v) : ''].filter(Boolean).join(' · '),
           'OBSERVACIONES': [v.recibido_por && 'Recibe: ' + v.recibido_por, v.email_nuevo && 'Email: ' + v.email_nuevo, v.observaciones].filter(Boolean).join(' · '),

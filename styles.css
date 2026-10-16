@@ -134,3 +134,11 @@ code { font-size: 13px; background: #eef1f6; padding: 1px 4px; border-radius: 4p
 .fijar input[type=date] { flex: 1; min-width: 0; padding: 8px; border: 1px solid #cfd4dc; border-radius: 8px; background: #fff; font-size: 15px; }
 .fijar .small-btn { margin-top: 0; white-space: nowrap; }
 #ver { position: fixed; right: 8px; bottom: calc(6px + env(safe-area-inset-bottom)); font-size: 11px; color: #8a909b; background: #f4f5f7cc; padding: 1px 6px; border-radius: 6px; pointer-events: none; z-index: 5; }
+/* v1.7 */
+.nuevo-btn { display: block; text-align: center; font-weight: 700; color: var(--navy2); background: #fff; border: 1.5px dashed #9fb0cc; border-radius: var(--r); padding: 11px; margin: 0 0 10px; }
+.nuevo-btn:active { background: #eef1f6; }
+fieldset.alta { background: #f1f5fb; border-color: #c9d5ea; }
+.form select { display: block; width: 100%; margin-top: 5px; padding: 12px; border: 1px solid #cfd4dc; border-radius: 10px; background: #fff; font-size: 16px; font-weight: 400; }
+.form input.err { border-color: var(--red); box-shadow: 0 0 0 2px #c6282833; }
+.nuevo-rev { border-left: 6px solid #3d6fd1; }
+.fijar input[type=text] { flex: 1; min-width: 0; padding: 8px; border: 1px solid #cfd4dc; border-radius: 8px; font-size: 15px; }
