@@ -1,6 +1,6 @@
 // Service worker: app disponible sin cobertura y autoactualización.
 // Al publicar cambios: subir VERSION. El móvil detecta el sw.js nuevo al abrir la app y se recarga solo.
-const VERSION = 'rondas-v1.7.0';
+const VERSION = 'rondas-v1.8.0';
 const SHELL = ['./', 'index.html', 'app.js', 'styles.css', 'config.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

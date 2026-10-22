@@ -1,11 +1,11 @@
-/* RONDAS COMERCIALES · PWA · Sistema RTT · v1.7 2026-10-15 */
+/* RONDAS COMERCIALES · PWA · Sistema RTT · v1.8 2026-10-22 */
 (() => {
 'use strict';
 
-const APP_V = '1.7';
+const APP_V = '1.8';
 const API = (window.RONDAS_API || '').trim();
 const DEMO = !API;
-const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', filtro: 'rondas_filtro', filtroHoy: 'rondas_filtro_hoy' };
+const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', vista: 'rondas_vista', filtroT: 'rondas_filtro_t' };
 const TIPOS = { hotel: 'Hotel', clinica: 'Clínica', residencia: 'Residencia', negocio: 'Negocio', ambulatorio: 'Ambulatorio', restaurante: 'Restaurante', otro: 'Otro' };
 
 /* ───────── estado ───────── */
@@ -54,26 +54,22 @@ async function call(action, body = {}) {
 }
 
 /* ───────── datos combinados (servidor + cola local) ───────── */
-function visitas() {
+let _idx = { d: null, q: null, all: [], por: new Map() };   // índice por sitio (se rehace solo si cambian datos o cola)
+function indice() {
+  if (_idx.d === data?.visitas && _idx.q === queue) return _idx;
   const m = new Map((data?.visitas || []).map(v => [v.id, v]));
   queue.forEach(v => m.set(v.id, { ...v, _pend: true }));
-  return [...m.values()].filter(v => !v.borrado);
+  const all = [...m.values()].filter(v => !v.borrado);
+  const por = new Map();
+  all.forEach(v => { if (!por.has(v.sitio_id)) por.set(v.sitio_id, []); por.get(v.sitio_id).push(v); });
+  por.forEach(a => a.sort((x, y) => (y.fecha + y.hora).localeCompare(x.fecha + x.hora)));
+  _idx = { d: data?.visitas, q: queue, all, por };
+  return _idx;
 }
-function visitasDe(sitioId) {
-  return visitas().filter(v => v.sitio_id === sitioId)
-    .sort((a, b) => (b.fecha + b.hora).localeCompare(a.fecha + a.hora));
-}
+function visitas() { return indice().all; }
+function visitasDe(sitioId) { return indice().por.get(sitioId) || []; }
 function ultimaVisita(sitioId) { return visitasDe(sitioId)[0] || null; }
 function sitio(id) { return (data?.sitios || []).find(s => s.id === id); }
-function paquetes() {
-  const asig = new Map((data?.paquetes || []).map(p => [p.id, p.asignado_a || '']));
-  const m = new Map();
-  (data?.sitios || []).forEach(s => {
-    if (!m.has(s.paquete)) m.set(s.paquete, { id: s.paquete, zona: s.zona, asignado_a: asig.get(s.paquete) || '', sitios: [] });
-    m.get(s.paquete).sitios.push(s);
-  });
-  return [...m.values()];
-}
 const enRonda = s => !s.no_visitar;   // no_visitar = lo lleva Jorge: fuera del % y del punteo
 /* ───────── sistema vivo: cuándo toca cada sitio ───────── */
 /* "¿Cuándo volver?" es texto libre del comercial: solo sugerencia. Los códigos de la v1.3 (2s, 1m…) se tratan como vacíos. */
@@ -84,7 +80,7 @@ const fijada = id => (data?.proximas || []).find(x => x.sitio_id === id)?.fecha 
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const addDias = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d); };
 const diasEntre = (a, b) => Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 864e5);
-const PRIO = { A: 0, B: 1, C: 2 };
+const PRIO = { 'A+': 0, A: 1, B: 2, C: 3 };
 const ESTADOS = { 'pendiente': 'Pendiente', 'en seguimiento': 'En seguimiento', 'cliente ok': 'Cliente OK', 'no volver': 'No volver', 'esperar': 'Esperar' };
 
 /* Reglas (gana la primera): no_visitar / estado no volver / esperar → fuera · fecha fijada por Jorge posterior a la última
@@ -133,7 +129,12 @@ function pseudoSitio(id) {   // ficha mínima a partir de la última visita del 
 const nombreSitio = id => sitio(id)?.nombre || pseudoSitio(id)?.nombre || id;
 const btnNuevo = () => `<a class="nuevo-btn" href="#/visita/nuevo">➕ Sitio nuevo (no está en la lista)</a>`;
 
-const prioTag = s => s.prioridad ? `<span class="prio p${esc(s.prioridad)}">${esc(s.prioridad)}</span>` : '';
+const prioCls = p => ({ 'A+': 'pAp', A: 'pA', B: 'pB', C: 'pC' }[p] || '');
+const prioTag = s => PRIO[s.prioridad] !== undefined ? `<span class="prio ${prioCls(s.prioridad)}">${esc(s.prioridad)}</span>` : '';
+const prioClase = s => PRIO[s.prioridad] !== undefined ? 'pr-' + prioCls(s.prioridad) : '';
+/* "J": hay una visita con "Jorge debe contactar" sin marcar como contactada (independiente de la prioridad) */
+const pendJ = id => visitasDe(id).filter(v => v.jorge_contactar && !v.contactado);
+const jTag = id => pendJ(id).length ? '<span class="jbadge" title="Jorge debe contactar">J</span>' : '';
 
 function visitadosSet() { return new Set(visitas().map(v => v.sitio_id)); }
 
@@ -154,20 +155,74 @@ function fmtTel(t) {
   return { txt: d.length === 9 ? d.replace(/(\d{3})(\d{3})(\d{3})/, '$1 $2 $3') : String(t), ext: false };
 }
 
+/* ───────── fotos: se comprimen en el móvil, esperan en IndexedDB y suben cuando la visita ya está en el servidor ───────── */
+let fotosCola = [];        // copia en memoria de lo pendiente (para contar y pintar)
+const fotosMem = new Map(); // respaldo si el navegador no deja usar IndexedDB
+const fotosStore = (() => {
+  let dbp = null;
+  const abrir = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('rondas', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('fotos', { keyPath: 'foto_id' });
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+  const tx = (modo, fn) => abrir().then(db => new Promise((res, rej) => {
+    const t = db.transaction('fotos', modo); const rq = fn(t.objectStore('fotos'));
+    t.oncomplete = () => res(rq.result); t.onerror = () => rej(t.error);
+  }));
+  return {
+    put: f => tx('readwrite', st => st.put(f)).catch(() => { fotosMem.set(f.foto_id, f); }),
+    del: id => { fotosMem.delete(id); return tx('readwrite', st => st.delete(id)).catch(() => {}); },
+    all: () => tx('readonly', st => st.getAll()).catch(() => []).then(a => [...(a || []), ...fotosMem.values()])
+  };
+})();
+async function cargarFotosCola() { fotosCola = (await fotosStore.all()).map(({ data: _d, ...x }) => x); renderSync(); }
+async function comprimir(file, max = 1600, q = 0.72) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', q);
+  } finally { URL.revokeObjectURL(url); }
+}
+async function subirFotos() {
+  const todas = await fotosStore.all();
+  const enCola = new Set(queue.map(v => v.id));
+  let ok = 0;
+  for (const f of todas) {
+    if (enCola.has(f.visita_id)) continue;                       // la visita aún no ha llegado al servidor
+    const v = (data?.visitas || []).find(x => x.id === f.visita_id);
+    if (!v && !DEMO) { if (Date.now() - (f.creado || 0) > 7 * 864e5) await fotosStore.del(f.foto_id); continue; }   // visita borrada
+    try {
+      const j = await call('subirFoto', { foto_id: f.foto_id, visita_id: f.visita_id, data: f.data });
+      await fotosStore.del(f.foto_id); ok++;
+      const vv = (data?.visitas || []).find(x => x.id === f.visita_id);
+      if (vv && !String(vv.fotos || '').split(',').includes(j.file_id)) vv.fotos = [vv.fotos, j.file_id].filter(Boolean).join(',');
+    } catch (e) { if (!e.server) break; syncError = 'Foto: ' + e.message; }
+  }
+  if (ok) { ls.set(LS.data, data); _idx.d = null; }
+  await cargarFotosCola();
+  return ok;
+}
+
 /* ───────── sincronización ───────── */
 async function sync({ silent = false } = {}) {
-  if (syncing || !queue.length || !navigator.onLine) { renderSync(); return; }
+  if (syncing || (!queue.length && !fotosCola.length) || (!navigator.onLine && !DEMO)) { renderSync(); return; }
   syncing = true; renderSync();
   try {
-    const j = await call('sync', { visitas: queue });
-    const okIds = new Set(j.resultados.filter(r => r.ok).map(r => r.id));
-    const errs = j.resultados.filter(r => !r.ok);
-    queue = queue.filter(v => !okIds.has(v.id));
-    ls.set(LS.queue, queue);
-    data.visitas = j.visitas; ls.set(LS.data, data);
-    syncError = errs.length ? errs.map(e => e.error).join('; ') : '';
-    if (!silent && okIds.size) toast(`✓ ${okIds.size} visita${okIds.size > 1 ? 's' : ''} enviada${okIds.size > 1 ? 's' : ''}`);
-    if (syncError) toast('Error: ' + syncError, 5000);
+    if (queue.length) {
+      const j = await call('sync', { visitas: queue });
+      const okIds = new Set(j.resultados.filter(r => r.ok).map(r => r.id));
+      const errs = j.resultados.filter(r => !r.ok);
+      queue = queue.filter(v => !okIds.has(v.id));
+      ls.set(LS.queue, queue);
+      data.visitas = j.visitas; ls.set(LS.data, data);
+      syncError = errs.length ? errs.map(e => e.error).join('; ') : '';
+      if (!silent && okIds.size) toast(`✓ ${okIds.size} visita${okIds.size > 1 ? 's' : ''} enviada${okIds.size > 1 ? 's' : ''}`);
+      if (syncError) toast('Error: ' + syncError, 5000);
+    }
+    if (fotosCola.length) { const n = await subirFotos(); if (n && !silent) toast(`✓ ${n} foto${n > 1 ? 's' : ''} enviada${n > 1 ? 's' : ''}`); }
   } catch (e) {
     syncError = e.server ? e.message : '';
     if (!silent) toast(e.server ? 'Error: ' + e.message : 'Sin conexión. Se enviará luego.');
@@ -178,23 +233,24 @@ async function sync({ silent = false } = {}) {
 function renderSync() {
   const b = $('#btnSync');
   if (!auth) { b.hidden = true; return; }
-  b.hidden = !queue.length && navigator.onLine;
-  b.className = 'sync' + (queue.length ? ' pend' : '') + (navigator.onLine ? '' : ' off');
-  b.textContent = syncing ? 'Enviando…' : queue.length ? `⇅ ${queue.length} sin enviar` : 'Sin red';
+  const nf = fotosCola.length, pend = queue.length || nf;
+  b.hidden = !pend && navigator.onLine;
+  b.className = 'sync' + (pend ? ' pend' : '') + (navigator.onLine ? '' : ' off');
+  b.textContent = syncing ? 'Enviando…' : pend ? '⇅ ' + [queue.length ? `${queue.length} sin enviar` : '', nf ? `${nf} foto${nf > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ') : 'Sin red';
   const ban = $('#banner');
   ban.hidden = !(DEMO || syncError);
   ban.textContent = DEMO ? 'MODO DEMO · datos de prueba, no se envía nada' : syncError ? '⚠ ' + syncError : '';
 }
 window.addEventListener('online', () => sync());
 window.addEventListener('offline', renderSync);
-setInterval(() => { if (queue.length) sync({ silent: true }); }, 60000);
+setInterval(() => { if (queue.length || fotosCola.length) sync({ silent: true }); }, 60000);
 $('#btnSync').onclick = () => sync();
 
 async function refresh({ silent = false } = {}) {
   if (!navigator.onLine && !DEMO) { if (!silent) toast('Sin conexión'); return; }
   try {
     const j = await call('bootstrap');
-    data = { sitios: j.sitios, paquetes: j.paquetes, visitas: j.visitas, usuarios: j.usuarios, proximas: j.proximas || [], ts: j.ts };
+    data = { sitios: j.sitios, paquetes: j.paquetes, visitas: j.visitas, usuarios: j.usuarios, proximas: j.proximas || [], geo_nuevos: j.geo_nuevos || [], ts: j.ts };
     lastRefresh = Date.now();
     auth = { ...auth, ...j.user }; ls.set(LS.auth, auth);
     ls.set(LS.data, data);
@@ -207,11 +263,11 @@ async function refresh({ silent = false } = {}) {
 }
 
 function logout() {
-  if (queue.length && !confirmSalida()) return;
+  if ((queue.length || fotosCola.length) && !confirmSalida()) return;
   auth = null; data = null; ls.del(LS.auth); ls.del(LS.data);
   location.hash = '#/'; route();
 }
-function confirmSalida() { return window.confirm(`Hay ${queue.length} visita(s) sin enviar. Si sales se perderán. ¿Salir igualmente?`); }
+function confirmSalida() { return window.confirm(`Hay ${queue.length} visita(s) y ${fotosCola.length} foto(s) sin enviar. Si sales, las visitas se perderán. ¿Salir igualmente?`); }
 
 /* ───────── cabecera / menú ───────── */
 function header(title, back) {
@@ -237,15 +293,6 @@ view.addEventListener('click', e => {
   (navigator.clipboard?.writeText(txt) || Promise.reject()).then(() => toast('Copiado: ' + txt), () => {});
 });
 
-function tabs(activo) {
-  const n = colaHoy(filtroHoyMios()).length;
-  return `<div class="seg tabs main" id="tabsMain">
-    <button data-go="#/hoy" class="${activo === 'hoy' ? 'on' : ''}">Hoy toca${n ? ` <b class="badge">${n}</b>` : ''}</button>
-    <button data-go="#/paquetes" class="${activo === 'paq' ? 'on' : ''}">Paquetes</button>
-  </div>`;
-}
-view.addEventListener('click', e => { const b = e.target.closest('#tabsMain button'); if (b) location.hash = b.dataset.go; });
-
 /* ───────── router ───────── */
 function route() {
   window.scrollTo(0, 0);
@@ -253,12 +300,10 @@ function route() {
   if (!data) { vCargando(); return refresh({ silent: true }); }
   const [, r, a, b] = (location.hash || '#/').split('/').map(decodeURIComponent);
   switch (r) {
-    case 'paquete': return vPaquete(a);
     case 'sitio': return vSitio(a);
     case 'visita': return vForm(a, b);
-    case 'panel': return auth.admin ? vPanel() : vHoy();
-    case 'paquetes': return vPaquetes();
-    default: return vHoy();
+    case 'panel': return auth.admin ? vPanel() : vLista();
+    default: return vLista();   // una sola lista (los paquetes ya no se usan para navegar)
   }
 }
 window.addEventListener('hashchange', route);
@@ -302,7 +347,7 @@ function vLogin() {
     try {
       const j = await call('login');
       auth = { ...auth, ...j.user }; ls.set(LS.auth, auth);
-      location.hash = '#/hoy';
+      location.hash = '#/';
       await refresh({ silent: true });
       route();
     } catch (err) {
@@ -312,135 +357,117 @@ function vLogin() {
   };
 }
 
-/* ───────── 2a · HOY TOCA ───────── */
-function misPaquetes() { return paquetes().filter(p => esMio(p)); }
-function filtroHoyMios() { return ls.get(LS.filtroHoy, 'mios') === 'mios' && misPaquetes().length > 0; }
-function sitiosBase(mios) {
-  const ids = mios ? new Set(misPaquetes().map(p => p.id)) : null;
-  return (data.sitios || []).filter(s => !ids || ids.has(s.paquete));
+/* ───────── 2 · LISTA ÚNICA DE SITIOS: vistas Zona / Prioridad / Cerca · filtro Tocan / 7 días / Todos ───────── */
+let miPos = null;   // { lat, lng, ts } (solo en memoria)
+const distKm = (a, b) => {
+  const R = 6371, r = x => x * Math.PI / 180;
+  const dLat = r(b.lat - a.lat), dLng = r(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+};
+const fmtDist = d => d < 1 ? Math.round(d * 1000 / 10) * 10 + ' m' : d.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' km';
+const tieneGeo = s => s.lat !== null && s.lat !== undefined && s.lat !== '' && s.lng !== null && s.lng !== undefined && s.lng !== '';
+function pedirUbicacion() {
+  if (!navigator.geolocation) { toast('Este móvil no da la ubicación'); return Promise.resolve(false); }
+  toast('Buscando tu ubicación…', 8000);
+  return new Promise(res => navigator.geolocation.getCurrentPosition(
+    p => { miPos = { lat: p.coords.latitude, lng: p.coords.longitude, ts: Date.now() }; toast('Ubicación lista'); res(true); },
+    e => { toast(e.code === 1 ? 'Permiso de ubicación denegado: actívalo en el navegador' : 'No se pudo obtener la ubicación'); res(false); },
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }));
 }
-function colaHoy(mios) {
-  return sitiosBase(mios).map(s => ({ s, p: plan(s) })).filter(x => toca(x.p))
-    .sort((a, b) => (PRIO[a.s.prioridad] ?? 3) - (PRIO[b.s.prioridad] ?? 3)
-      || (a.p.pendiente ? '0' : a.p.fecha).localeCompare(b.p.pendiente ? '0' : b.p.fecha)
-      || (b.s.pedidos_mes_12m || 0) - (a.s.pedidos_mes_12m || 0));
-}
-function vHoy() {
-  volverA = '#/hoy';
+const GRUPOS_PRIO = [['A+', 'A+ · urgente'], ['A', 'A · importante'], ['B', 'B · seguimiento'], ['C', 'C · mantener'], ['', 'Sin prioridad']];
+
+function vLista() {
+  volverA = '#/';
   header(`Hola, ${auth.nombre || ''}`);
-  const tengo = misPaquetes().length > 0;
-  const mios = filtroHoyMios();
-  const cola = colaHoy(mios);
+  const vista = ls.get(LS.vista, 'zona');
+  const filtro = ls.get(LS.filtroT, 'tocan');
   const hoy = hoyISO(), en7 = addDias(hoy, 7);
-  const prox = sitiosBase(mios).map(s => ({ s, p: plan(s) }))
-    .filter(x => !x.p.fuera && !x.p.pendiente && x.p.fecha > hoy && x.p.fecha <= en7)
-    .sort((a, b) => a.p.fecha.localeCompare(b.p.fecha));
-  const zonas = [...new Set(cola.map(x => x.s.zona))];
-  const item = ({ s, p }) => `<a class="card sitio ${s.situacion === 'cliente' ? 'cli' : 'nuevo'}" href="#/sitio/${s.id}">
-      <div class="row"><strong>${prioTag(s)}${esc(s.nombre)}</strong></div>
-      <div class="muted small">${esc(TIPOS[s.tipo] || s.tipo)} · ${esc(s.direccion)} · <em>${esc(s.paquete)}</em></div>
-      <div class="tag ${p.pendiente ? '' : 'warn'}">${esc(textoPlan(p))}</div>
-    </a>`;
-  view.innerHTML = `
-  ${tabs('hoy')}
-  ${btnNuevo()}
-  <div class="seg tabs" id="filHoy">
-    <button data-v="mios" class="${mios ? 'on' : ''}" ${tengo ? '' : 'disabled'}>Mis paquetes</button>
-    <button data-v="todos" class="${mios ? '' : 'on'}">Todos</button>
-  </div>
-  <p class="muted small legend">${cola.length ? `${cola.length} sitio${cola.length > 1 ? 's' : ''} por visitar · ordenados por prioridad` : ''}</p>
-  ${cola.length ? zonas.map(z => `<h2 class="zona">${esc(z)}</h2>${cola.filter(x => x.s.zona === z).map(item).join('')}`).join('')
-    : '<p class="empty">✓ No toca ninguna visita hoy</p>'}
-  ${prox.length ? `<h2 class="zona">Próximos 7 días (${prox.length})</h2>${prox.map(item).join('')}` : ''}`;
-  $('#filHoy').onclick = e => { const b = e.target.closest('button'); if (!b || b.disabled) return; ls.set(LS.filtroHoy, b.dataset.v); vHoy(); };
-}
+  const todos = (data.sitios || []).map(s => ({ s, p: plan(s) }));
+  const nTocan = todos.filter(x => toca(x.p)).length;
+  const enSemana = x => !x.p.fuera && (toca(x.p) || (x.p.fecha && x.p.fecha <= en7));
+  const nSemana = todos.filter(enSemana).length;
+  const filas = todos.filter(x => filtro === 'todos' || (filtro === 'semana' ? enSemana(x) : toca(x.p)));
+  const ordenPlan = (a, b) => (a.p.fuera ? 1 : 0) - (b.p.fuera ? 1 : 0)
+    || (a.p.pendiente ? '0' : a.p.fecha || '9').localeCompare(b.p.pendiente ? '0' : b.p.fecha || '9')
+    || (b.s.pedidos_mes_12m || 0) - (a.s.pedidos_mes_12m || 0);
+  const ordenPrio = (a, b) => (PRIO[a.s.prioridad] ?? 9) - (PRIO[b.s.prioridad] ?? 9) || ordenPlan(a, b);
 
-/* ───────── 2b · PAQUETES ───────── */
-function vPaquetes() {
-  volverA = '#/paquetes';
-  header(`Hola, ${auth.nombre || ''}`);
-  const filtro = ls.get(LS.filtro, 'mios');
-  const vis = visitadosSet();
-  let ps = paquetes();
-  const mios = ps.filter(p => esMio(p));
-  const usarMios = filtro === 'mios' && mios.length;
-  if (usarMios) ps = mios;
-  const zonas = [...new Set(ps.map(p => p.zona))];
+  let cuerpo = '';
+  if (!filas.length) cuerpo = `<p class="empty">${filtro === 'todos' ? 'Sin sitios cargados' : '✓ No toca ninguna visita'}</p>`;
+  else if (vista === 'prio') {
+    cuerpo = GRUPOS_PRIO.map(([k, t]) => {
+      const g = filas.filter(x => (PRIO[x.s.prioridad] !== undefined ? x.s.prioridad : '') === k).sort(ordenPlan);
+      return g.length ? `<h2 class="zona">${esc(t)} (${g.length})</h2>${g.map(x => itemSitio(x)).join('')}` : '';
+    }).join('');
+  } else if (vista === 'cerca') {
+    if (!miPos) cuerpo = `<button class="primary big block" id="btnUbic">📍 Ordenar por mi ubicación</button>
+      <p class="muted small legend">Pide permiso de ubicación una vez. Solo se usa en el móvil para ordenar; no se guarda.</p>`;
+    else {
+      const con = filas.filter(x => tieneGeo(x.s)).map(x => ({ ...x, d: distKm(miPos, { lat: Number(x.s.lat), lng: Number(x.s.lng) }) })).sort((a, b) => a.d - b.d);
+      const sin = filas.filter(x => !tieneGeo(x.s)).sort(ordenPrio);
+      cuerpo = `<p class="muted small legend">Desde tu posición de hace ${Math.max(0, Math.round((Date.now() - miPos.ts) / 60000))} min · <a class="link" id="btnUbic" href="javascript:void 0">↻ actualizar</a></p>
+        ${con.map(x => itemSitio(x, x.d)).join('')}
+        ${sin.length ? `<h2 class="zona">Sin coordenadas (${sin.length})</h2>${sin.map(x => itemSitio(x)).join('')}` : ''}`;
+    }
+  } else {
+    const zonas = [...new Set(filas.map(x => x.s.zona || 'Sin zona'))];
+    cuerpo = zonas.map(z => { const g = filas.filter(x => (x.s.zona || 'Sin zona') === z).sort(ordenPrio);
+      return `<h2 class="zona">${esc(z)} (${g.length})</h2>${g.map(x => itemSitio(x, null, true)).join('')}`; }).join('');
+  }
 
   view.innerHTML = `
-  ${tabs('paq')}
   ${btnNuevo()}
-  <div class="search"><input id="q" type="search" placeholder="Buscar sitio en todos los paquetes…" autocomplete="off"></div>
+  <div class="search"><input id="q" type="search" placeholder="Buscar sitio por nombre, calle o ID…" autocomplete="off"></div>
   <div id="res"></div>
-  <div class="seg tabs" id="fil">
-    <button data-v="mios" class="${usarMios ? 'on' : ''}" ${mios.length ? '' : 'disabled'}>Mis paquetes${mios.length ? ` (${mios.length})` : ''}</button>
-    <button data-v="todos" class="${usarMios ? '' : 'on'}">Todos (${paquetes().length})</button>
-  </div>
-  <div id="lista">${zonas.map(z => `
-    <h2 class="zona">${esc(z)}</h2>
-    ${ps.filter(p => p.zona === z).map(p => {
-      const r = p.sitios.filter(enRonda), n = r.length, k = r.filter(s => vis.has(s.id)).length, pc = n ? Math.round(100 * k / n) : 100;
-      const t = p.sitios.filter(s => toca(plan(s))).length;
-      return `<a class="card pkg ${pc === 100 ? 'hecho' : ''}" href="#/paquete/${encodeURIComponent(p.id)}">
-        <div class="row"><strong>${esc(p.id)}</strong>${p.asignado_a ? `<span class="quien">${esc(p.asignado_a)}</span>` : '<span class="quien libre">Sin asignar</span>'}</div>
-        <div class="bar"><i style="width:${pc}%"></i></div>
-        <div class="row small"><span>${pc === 100 ? '✓ Completado · ' : ''}${k} de ${n} visitados · <b>${pc}%</b></span><span class="${t ? 'pend' : 'muted'}">${t ? `${t} toca${t > 1 ? 'n' : ''}` : ''}</span></div>
-      </a>`;
-    }).join('')}`).join('')}
+  <div id="lista">
+    <div class="seg tabs" id="segVista">
+      <button data-v="zona" class="${vista === 'zona' ? 'on' : ''}">Por zona</button>
+      <button data-v="prio" class="${vista === 'prio' ? 'on' : ''}">Prioridad</button>
+      <button data-v="cerca" class="${vista === 'cerca' ? 'on' : ''}">📍 Cerca</button>
+    </div>
+    <div class="seg tabs fil" id="segFiltro">
+      <button data-v="tocan" class="${filtro === 'tocan' ? 'on' : ''}">Tocan${nTocan ? ` <b class="badge">${nTocan}</b>` : ''}</button>
+      <button data-v="semana" class="${filtro === 'semana' ? 'on' : ''}">7 días (${nSemana})</button>
+      <button data-v="todos" class="${filtro === 'todos' ? 'on' : ''}">Todos (${todos.length})</button>
+    </div>
+    <p class="muted small legend leyenda-prio"><span class="prio pAp">A+</span>urgente <span class="prio pA">A</span>importante <span class="prio pB">B</span>seguimiento <span class="prio pC">C</span>mantener <span class="jbadge">J</span>Jorge contacta</p>
+    ${cuerpo}
   </div>`;
 
-  $('#fil').onclick = e => { const b = e.target.closest('button'); if (!b || b.disabled) return; ls.set(LS.filtro, b.dataset.v); vPaquetes(); };
+  $('#segVista').onclick = async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    ls.set(LS.vista, b.dataset.v);
+    if (b.dataset.v === 'cerca' && !miPos) await pedirUbicacion();
+    vLista();
+  };
+  $('#segFiltro').onclick = e => { const b = e.target.closest('button'); if (!b) return; ls.set(LS.filtroT, b.dataset.v); vLista(); };
+  const bu = $('#btnUbic'); if (bu) bu.onclick = async () => { if (await pedirUbicacion()) vLista(); };
   const q = $('#q');
   q.oninput = () => {
     const t = norm(q.value.trim());
-    $('#lista').hidden = $('#fil').hidden = !!t;
-    $('#res').innerHTML = t ? listaSitios((data.sitios || []).filter(s => matchSitio(s, t)).slice(0, 40), true) : '';
+    $('#lista').hidden = !!t;
+    const r = t ? (data.sitios || []).filter(s => matchSitio(s, t)).slice(0, 40) : [];
+    $('#res').innerHTML = t ? (r.length ? r.map(s => itemSitio({ s, p: plan(s) }, miPos && tieneGeo(s) ? distKm(miPos, { lat: Number(s.lat), lng: Number(s.lng) }) : null)).join('') : '<p class="empty">Sin resultados</p>') : '';
   };
 }
-function esMio(p) {
-  const a = norm(p.asignado_a);
-  return a && (a === norm(auth.nombre) || a === String(auth.usuario));
-}
-function matchSitio(s, t) { return norm(`${s.nombre} ${s.direccion} ${s.id} ${s.abonado}`).includes(t); }
+function matchSitio(s, t) { return norm(`${s.nombre} ${s.direccion} ${s.id} ${s.abonado} ${s.zona}`).includes(t); }
 
-function listaSitios(arr, conPaquete) {
-  if (!arr.length) return '<p class="empty">Sin resultados</p>';
-  return arr.map(s => {
-    const u = ultimaVisita(s.id);
-    return `<a class="card sitio ${s.situacion === 'cliente' ? 'cli' : 'nuevo'}${s.no_visitar ? ' bloq' : ''}" href="#/sitio/${s.id}">
-      <div class="row"><strong>${prioTag(s)}${esc(s.nombre)}</strong>${u ? `<span class="ok">✓ ${fmtFecha(u.fecha)}</span>` : ''}</div>
-      <div class="muted small">${esc(TIPOS[s.tipo] || s.tipo)} · ${esc(s.direccion)}${conPaquete ? ` · <em>${esc(s.paquete)}</em>` : ''}</div>
-      ${s.sin_recepcion ? '<div class="tag warn">Sin recepción</div>' : ''}
-      ${s.no_visitar ? '<div class="tag">No visitar en ronda · lo lleva Jorge</div>' : (() => { const p = plan(s); return `<div class="tag ${toca(p) && !p.pendiente ? 'warn' : ''}">${esc(textoPlan(p))}</div>`; })()}
-    </a>`;
-  }).join('');
-}
-
-/* ───────── 3 · SITIOS DEL PAQUETE ───────── */
-function vPaquete(id) {
-  const p = paquetes().find(x => x.id === id);
-  if (!p) { location.hash = '#/paquetes'; return; }
-  header(p.id, '#/paquetes');
-  volverA = '#/paquete/' + encodeURIComponent(p.id);
-  const vis = visitadosSet();
-  const enR = p.sitios.filter(enRonda);
-  const k = enR.filter(s => vis.has(s.id)).length;
-  view.innerHTML = `
-  <div class="search"><input id="q" type="search" placeholder="Buscar en este paquete…" autocomplete="off"></div>
-  <p class="muted small legend"><span class="dot cli"></span>Cliente <span class="dot nuevo"></span>Nuevo · ${k}/${enR.length} visitados${p.asignado_a ? ' · ' + esc(p.asignado_a) : ''}</p>
-  <div id="lista">${listaSitios(p.sitios)}</div>`;
-  $('#q').oninput = e => {
-    const t = norm(e.target.value.trim());
-    $('#lista').innerHTML = listaSitios(t ? p.sitios.filter(s => matchSitio(s, t)) : p.sitios);
-  };
+function itemSitio({ s, p }, dist, sinZona) {
+  const u = p.u;
+  return `<a class="card sitio ${prioClase(s)} ${s.situacion === 'cliente' ? 'cli' : 'nuevo'}${p.fuera ? ' bloq' : ''}" href="#/sitio/${s.id}">
+    <div class="row"><strong>${prioTag(s)}${esc(s.nombre)}</strong><span class="der">${jTag(s.id)}${dist != null ? `<span class="dist">${fmtDist(dist)}</span>` : u ? `<span class="ok">✓ ${fmtFecha(u.fecha)}</span>` : ''}</span></div>
+    <div class="muted small">${esc(TIPOS[s.tipo] || s.tipo)} · ${esc(s.direccion)}${!sinZona && s.zona ? ` · <em>${esc(s.zona)}</em>` : ''}</div>
+    ${s.sin_recepcion ? '<div class="tag warn">Sin recepción</div> ' : ''}<div class="tag ${toca(p) && !p.pendiente ? 'warn' : ''}">${esc(textoPlan(p))}</div>
+  </a>`;
 }
 
 /* ───────── 4 · FICHA DEL SITIO ───────── */
 function vSitio(id) {
   if (esNuevoId(id)) return vSitioNuevo(id);
   const s = sitio(id);
-  if (!s) { location.hash = '#/paquetes'; return; }
-  header(s.nombre, volverA || '#/paquete/' + encodeURIComponent(s.paquete));
+  if (!s) { location.hash = '#/'; return; }
+  header(s.nombre, volverA || '#/');
   const c = contacto(s);
   const tel = fmtTel(c.telefono);
   const vs = visitasDe(s.id);
@@ -459,21 +486,24 @@ function vSitio(id) {
     </div>
     ${s.sin_recepcion ? '<div class="alert">⚠ Sin recepción</div>' : ''}
     ${s.no_visitar ? '<div class="alert gris">⛔ No visitar en ronda · lo lleva Jorge personalmente</div>' : ''}
+    ${pendJ(s.id).map(v => `<div class="alert azul"><span class="jbadge">J</span> Jorge debe contactar${v.contactar_motivo ? ': ' + esc(v.contactar_motivo) : ''} <span class="small">(${fmtFecha(v.fecha)})</span></div>`).join('')}
     <div class="plan ${pl.fuera ? 'fuera' : toca(pl) ? 'toca' : ''}">
       <b>${esc(textoPlan(pl))}</b>${!pl.fuera && !pl.pendiente ? `<span class="muted small"> · ${esc(pl.motivo)}</span>` : ''}
       ${pl.u ? `<div class="small muted">Última visita: ${fmtFecha(pl.u.fecha)} · ${esc(nombreUsuario(pl.u.usuario))}${sugerencia(pl.u) ? ` · sugiere: «${esc(sugerencia(pl.u))}»` : ''}</div>` : ''}
       ${auth.admin && !s.no_visitar ? `<div class="fijar"><input type="date" id="fjFecha" value="${esc(fijada(s.id))}"><button class="small-btn" id="fjBtn">Fijar próxima visita</button></div>` : ''}
     </div>
     <dl>
-      ${s.prioridad || s.estado ? `<dt>Prioridad · Estado</dt><dd>${s.prioridad ? prioTag(s) : ''}${esc(ESTADOS[norm(s.estado)] || s.estado || '—')}</dd>` : ''}
+      ${s.prioridad || s.estado || auth.admin ? `<dt>Prioridad · Estado</dt><dd>${prioTag(s)}${esc(ESTADOS[norm(s.estado)] || s.estado || '—')}${s.prioridad_app ? ' <span class="muted small">· prioridad puesta en la app</span>' : ''}</dd>` : ''}
+      ${auth.admin ? `<dd class="prio-sel" id="prioSel">${['A+', 'A', 'B', 'C'].map(k => `<button type="button" data-p="${k}" class="prio ${prioCls(k)} ${s.prioridad === k ? 'on' : ''}">${k}</button>`).join('')}
+        ${s.prioridad_app ? `<button type="button" data-p="" class="small-btn">Volver a la del maestro (${esc(s.prioridad_maestro || 'sin')})</button>` : ''}</dd>` : ''}
       ${s.contacto ? `<dt>Contacto</dt><dd>${esc(s.contacto)}</dd>` : ''}
-      <dt>Dirección</dt><dd data-copy="${esc(s.direccion)}">${esc(s.direccion) || '—'}</dd>
+      <dt>Dirección</dt><dd><span data-copy="${esc(s.direccion)}">${esc(s.direccion) || '—'}</span>
+        ${s.direccion || tieneGeo(s) ? ` · <a class="link" target="_blank" rel="noopener" href="${esc(urlMapa(s))}">Cómo llegar</a>` : ''}</dd>
       <dt>Teléfono</dt><dd ${tel.txt ? `data-copy="${esc(tel.txt)}"` : ''}>${tel.txt ? (tel.ext ? `Ext. interna ${esc(tel.txt)}` : esc(tel.txt)) : '<span class="muted">sin dato</span>'}
         ${c.telNuevo ? `<span class="muted small"> · apuntado en visita ${fmtFecha(c.telNuevo.fecha)}</span>` : ''}</dd>
       <dt>Email</dt><dd ${c.email ? `data-copy="${esc(c.email)}"` : ''}>${c.email ? esc(c.email) : '<span class="muted">sin dato</span>'}
         ${c.emailNuevo ? `<span class="muted small"> · apuntado en visita ${fmtFecha(c.emailNuevo.fecha)}</span>` : ''}</dd>
       <dt>¿Tiene Foxtrot?</dt><dd>${si(s.tiene_foxtrot)}</dd>
-      <dt>¿Tiene botonera?</dt><dd>${si(s.tiene_botonera)}</dd>
       <dt>PMG / tarifa pactada</dt><dd>${si(s.pacto_pmg)}${s.abonado ? ` <span class="muted small">· abonado ${esc(s.abonado)}</span>` : ''}</dd>
       <dt>Hotel → aeropuerto <span class="muted small">(dato interno de referencia)</span></dt>
         <dd>${s.pmg_precio != null || s.pmg_precio_festivo != null
@@ -490,12 +520,21 @@ function vSitio(id) {
   ${vs.length ? vs.map(v => tarjetaVisita(v)).join('') : '<p class="empty">Aún sin visitas</p>'}`;
   const fb = $('#fjBtn');
   if (fb) fb.onclick = () => fijarProxima(s.id, $('#fjFecha').value);
+  const ps = $('#prioSel');
+  if (ps) ps.onclick = e => { const b = e.target.closest('button'); if (!b) return;
+    online(async () => {
+      const j = await call('fijarPrioridad', { sitio_id: s.id, prioridad: b.dataset.p });
+      data.sitios = j.sitios; ls.set(LS.data, data);
+      toast(b.dataset.p ? 'Prioridad ' + b.dataset.p : 'Prioridad del maestro'); rerender();
+    }); };
 }
+const urlMapa = s => tieneGeo(s) ? `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`
+  : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.direccion + ', Alicante')}`;
 
 function vSitioNuevo(id) {
   const s = pseudoSitio(id);
-  if (!s) { location.hash = '#/hoy'; return; }
-  header(s.nombre, volverA || '#/hoy');
+  if (!s) { location.hash = '#/'; return; }
+  header(s.nombre, volverA || '#/');
   const vs = visitasDe(id);
   view.innerHTML = `
   <section class="card ficha">
@@ -526,15 +565,21 @@ function tarjetaVisita(v, conSitio) {
     v.expositor_puesto ? 'expositor puesto' : 'sin expositor',
     v.planos_dejados ? 'planos dejados' : v.planos_tiene ? 'tenía planos' : 'sin planos',
     v.tarjetas_dejadas ? 'tarjetas dejadas' : v.tarjetas_tiene ? 'tenía tarjetas' : 'sin tarjetas',
-    v.boligrafos_dados ? `${v.boligrafos_dados} bolis` : ''
+    v.boligrafos_dados ? `${v.boligrafos_dados} bolis` : '',
+    v.pegatina_puesta ? 'pegatina puesta' : '', v.cartel_puesto ? 'cartel puesto' : '', v.qr_puesto ? 'QR puesto' : ''
   ].filter(Boolean).join(' · ');
+  const fotos = String(v.fotos || '').split(',').filter(Boolean);
+  const fotosPend = fotosCola.filter(f => f.visita_id === v.id).length;
   return `<div class="card visita">
     <div class="row"><strong>${s ? esc(s.nombre) : fmtFecha(v.fecha) + ' ' + esc(v.hora)}</strong>
       <span class="muted small">${s ? fmtFecha(v.fecha) + ' · ' : ''}${esc(nombreUsuario(v.usuario))}${v._pend ? ' · <b class="pend">sin enviar</b>' : ''}</span></div>
     ${v.recibido_por ? `<div class="small">Recibe: ${esc(v.recibido_por)}</div>` : ''}
     <div class="small muted">${items}</div>
     ${v.jorge_contactar ? `<div class="tag ${v.contactado ? '' : 'warn'}">Jorge contacta${v.contactar_motivo ? ': ' + esc(v.contactar_motivo) : ''}${v.contactado ? ' ✓ hecho' : ''}</div>` : ''}
+    ${v.foxtrot_ofrecer === true ? '<div class="tag fx">Ofrecer Foxtrot · hay recepción que pide taxi</div>' : ''}
     ${sugerencia(v) ? `<div class="small">Volver: <b>${esc(sugerencia(v))}</b></div>` : ''}
+    ${fotos.length ? `<div class="thumbs">${fotos.map(id => `<a class="th" target="_blank" rel="noopener" href="https://drive.google.com/file/d/${esc(id)}/view"><img loading="lazy" alt="foto" src="${/^DEMO/.test(id) ? 'icon-192.png' : `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w300`}"></a>`).join('')}</div>` : ''}
+    ${fotosPend ? `<div class="small">📷 <b class="pend">${fotosPend} foto${fotosPend > 1 ? 's' : ''} sin enviar</b></div>` : ''}
     ${v.observaciones ? `<p class="small">${esc(v.observaciones)}</p>` : ''}
     ${puedo ? `<a class="small link" href="#/visita/${v.sitio_id}/${encodeURIComponent(v.id)}">Editar</a>` : ''}
   </div>`;
@@ -546,20 +591,24 @@ function vForm(sitioId, visitaId) {
   const nuevo = alta || esNuevoId(sitioId);
   if (alta) sitioId = idNuevo();
   const s = nuevo ? (pseudoSitio(sitioId) || { id: sitioId, nombre: 'Sitio nuevo', telefono: '', email: '' }) : sitio(sitioId);
-  if (!s) { location.hash = '#/paquetes'; return; }
+  if (!s) { location.hash = '#/'; return; }
   const prev = visitaId ? visitas().find(v => v.id === visitaId) : null;
   if (visitaId && !prev) { location.hash = '#/sitio/' + sitioId; return; }
   if (prev && String(prev.usuario) !== String(auth.usuario) && !auth.admin) { location.hash = '#/sitio/' + sitioId; return; }
   if (s.no_visitar && !auth.admin) { toast('No visitar en ronda: lo lleva Jorge'); location.hash = '#/sitio/' + sitioId; return; }
-  header(prev ? 'Editar visita' : alta ? 'Sitio nuevo' : 'Nueva visita', alta ? (volverA || '#/hoy') : '#/sitio/' + sitioId);
+  header(prev ? 'Editar visita' : alta ? 'Sitio nuevo' : 'Nueva visita', alta ? (volverA || '#/') : '#/sitio/' + sitioId);
 
   const v = prev ? { ...prev } : {
     id: uid(), sitio_id: s.id, usuario: auth.usuario, fecha: hoyISO(), hora: horaAhora(),
     recibido_por: '', expositor_puesto: null, planos_tiene: null, planos_dejados: false,
     tarjetas_tiene: null, tarjetas_dejadas: false, boligrafos_dados: 0, jorge_contactar: false,
     contactar_motivo: '', telefono_nuevo: '', email_nuevo: '', observaciones: '', volver: '',
-    sitio_nuevo: nuevo, nuevo_nombre: '', nuevo_direccion: '', nuevo_tipo: '', nuevo_telefono: ''
+    sitio_nuevo: nuevo, nuevo_nombre: '', nuevo_direccion: '', nuevo_tipo: '', nuevo_telefono: '',
+    pegatina_puesta: false, cartel_puesto: false, qr_puesto: false, foxtrot_ofrecer: null, fotos: ''
   };
+  const fotosNuevas = [];   // {foto_id, data, url} comprimidas en el móvil; se suben tras enviar la visita
+  const yaFotos = String(v.fotos || '').split(',').filter(Boolean).length + fotosCola.filter(f => f.visita_id === v.id).length;
+  const chip = (k, label) => `<button type="button" class="tg ${v[k] ? 'on' : ''}" data-tg="${k}">${label}</button>`;
   const c = contacto(s);
   const sinTel = !c.telefono || fmtTel(c.telefono).ext;
   const yn = (k, label, req) => `
@@ -588,6 +637,9 @@ function vForm(sitioId, visitaId) {
     </div>
     <label>Quién os recibe <input name="recibido_por" value="${esc(v.recibido_por)}" placeholder="Nombre / cargo" autocomplete="off"></label>
     ${yn('expositor_puesto', '¿Tiene expositor puesto?', true)}
+    <div class="field"><span>Colocado hoy <span class="muted small">(toca lo que hayas puesto)</span></span>
+      <div class="toggles">${chip('pegatina_puesta', 'Pegatina')}${chip('cartel_puesto', 'Cartel')}${chip('qr_puesto', 'QR')}</div></div>
+    ${s.tiene_foxtrot ? '<p class="muted small">Ya tiene Foxtrot.</p>' : yn('foxtrot_ofrecer', '¿Hay recepción que pida taxi? → ofrecer Foxtrot')}
     <fieldset><legend>Planos</legend>${yn('planos_tiene', '¿Tiene?', true)}${yn('planos_dejados', '¿Se le dejan?')}</fieldset>
     <fieldset><legend>Tarjetas</legend>${yn('tarjetas_tiene', '¿Tiene?', true)}${yn('tarjetas_dejadas', '¿Se le dejan?')}</fieldset>
     <div class="field"><span>Bolígrafos dados</span>
@@ -605,6 +657,9 @@ function vForm(sitioId, visitaId) {
     <label>Observaciones <textarea name="observaciones" rows="3">${esc(v.observaciones)}</textarea></label>
     <label>¿Cuándo volver? <span class="muted small">(sugerencia)</span>
       <input name="volver" value="${esc(sugerencia(v))}" maxlength="140" placeholder="Ej.: en dos semanas, por la mañana, cuando esté la jefa…" autocomplete="off"></label>
+    <div class="field"><span>Fotos <span class="muted small">(opcional: pegatina, expositor, cartel…)${yaFotos ? ` · ya tiene ${yaFotos}` : ''}</span></span>
+      <label class="foto-add">📷 Añadir fotos<input type="file" id="fotoIn" accept="image/*" multiple hidden></label>
+      <div class="thumbs" id="thumbs"></div></div>
     <button class="primary big" type="submit">Guardar visita</button>
     ${prev ? '<button type="button" class="danger" id="btnDel">Borrar visita</button>' : ''}
   </form>`;
@@ -613,11 +668,25 @@ function vForm(sitioId, visitaId) {
   f.addEventListener('input', e => e.target.classList.remove('err'));
   f.querySelectorAll('.yn').forEach(g => g.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
+    if (g.dataset.k === 'foxtrot_ofrecer' && b.classList.contains('on')) { v.foxtrot_ofrecer = null; b.classList.remove('on'); return; }   // opcional: se puede desmarcar
     v[g.dataset.k] = b.dataset.v === '1';
     [...g.children].forEach(x => x.classList.toggle('on', x === b));
     g.closest('.field').classList.remove('err');
     if (g.dataset.k === 'jorge_contactar') $('#motivoBox').hidden = !v.jorge_contactar;
   });
+  f.querySelectorAll('[data-tg]').forEach(b => b.onclick = () => { v[b.dataset.tg] = !v[b.dataset.tg]; b.classList.toggle('on', v[b.dataset.tg]); });
+  const pintaFotos = () => { $('#thumbs').innerHTML = fotosNuevas.map((x, i) => `<span class="th"><img src="${x.url}" alt=""><button type="button" data-qf="${i}" aria-label="Quitar">✕</button></span>`).join(''); };
+  $('#thumbs').onclick = e => { const b = e.target.closest('[data-qf]'); if (!b) return; fotosNuevas.splice(Number(b.dataset.qf), 1); pintaFotos(); };
+  $('#fotoIn').onchange = async e => {
+    const files = [...e.target.files]; e.target.value = '';
+    if (!files.length) return;
+    toast('Preparando foto' + (files.length > 1 ? 's' : '') + '…');
+    for (const file of files) {
+      try { const url = await comprimir(file); fotosNuevas.push({ foto_id: 'F-' + uid().slice(2, 14), data: url.split(',')[1], url }); }
+      catch { toast('No se pudo leer una foto'); }
+    }
+    pintaFotos();
+  };
   f.querySelector('.stepper').onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     const i = f.boligrafos_dados; i.value = Math.max(0, (Number(i.value) || 0) + Number(b.dataset.d));
@@ -645,12 +714,15 @@ function vForm(sitioId, visitaId) {
     if (faltan.length) return toast('Marca Sí/No en los campos con *');
     if (v.email_nuevo && !/^\S+@\S+\.\S+$/.test(v.email_nuevo)) return toast('Email no válido');
     if (!v.jorge_contactar) v.contactar_motivo = '';
-    guardar(v, prev ? 'Visita corregida' : 'Visita guardada');
+    guardar(v, (prev ? 'Visita corregida' : 'Visita guardada') + (fotosNuevas.length ? ` · ${fotosNuevas.length} foto${fotosNuevas.length > 1 ? 's' : ''}` : ''),
+      fotosNuevas.map(x => ({ foto_id: x.foto_id, visita_id: v.id, data: x.data, creado: Date.now() })));
   };
 }
 
-function guardar(v, msg) {
+async function guardar(v, msg, fotos = []) {
   const { _pend, ...limpia } = v;
+  for (const ft of fotos) await fotosStore.put(ft);
+  if (fotos.length) await cargarFotosCola();
   queue = queue.filter(x => x.id !== limpia.id).concat(limpia);
   ls.set(LS.queue, queue);
   toast(msg + (navigator.onLine || DEMO ? '' : ' · se enviará al tener red'));
@@ -661,7 +733,7 @@ function guardar(v, msg) {
 /* ───────── 6 · PANEL (admin) ───────── */
 function vPanel() {
   volverA = '#/panel';
-  header('Panel', '#/hoy');
+  header('Panel', '#/');
   const vs = visitas();
   const vis = visitadosSet();
   const sitios = (data.sitios || []).filter(enRonda);
@@ -680,19 +752,19 @@ function vPanel() {
   const corr = vs.filter(v => v.telefono_nuevo || v.email_nuevo).sort((a, b) => b.fecha.localeCompare(a.fecha));
   const ult = [...vs].sort((a, b) => (b.fecha + b.hora).localeCompare(a.fecha + a.hora)).slice(0, 15);
   const sinExp = vs.filter(v => !v.exportado || v.exportado === 'MODIFICADA').length;
-  const nombres = (data.usuarios || []).map(u => u.nombre);
+  const conGeo = (data.sitios || []).filter(tieneGeo).length;
+  const geoNo = (data.sitios || []).filter(x => !tieneGeo(x) && x.geo === 'no').length;
+  const sinGeoNo = (data.sitios || []).length - conGeo - geoNo;
   const porFijar = (data.sitios || []).map(s => ({ s, p: plan(s) })).filter(x => x.p.sinFijar)
     .sort((a, b) => b.p.u.fecha.localeCompare(a.p.u.fecha));
 
   view.innerHTML = `
   <section class="card">
-    <div class="kpis"><div><b>${pc(k, total)}%</b><span>visitado</span></div><div><b>${colaHoy(false).length}</b><span>tocan hoy</span></div><div><b>${vs.length}</b><span>visitas</span></div></div>
+    <div class="kpis"><div><b>${pc(k, total)}%</b><span>visitado</span></div><div><b>${(data.sitios || []).filter(x => toca(plan(x))).length}</b><span>tocan hoy</span></div><div><b>${vs.length}</b><span>visitas</span></div></div>
     <h3>Por zona</h3>
     ${zonas.map(z => `<div class="row small"><span>${esc(z.z)}</span><span>${z.k}/${z.n} · ${pc(z.k, z.n)}%</span></div><div class="bar thin"><i style="width:${pc(z.k, z.n)}%"></i></div>`).join('')}
     <h3>Por usuario</h3>
-    ${users.map(u => { const ps = paquetes().filter(p => norm(p.asignado_a) === norm(u.nombre)); const ids = new Set(ps.map(p => p.id));
-      const t = (data.sitios || []).filter(s => ids.has(s.paquete) && toca(plan(s))).length;
-      return `<div class="row small"><span>${esc(u.usuario)} · ${esc(u.nombre)}</span><span>${u.nv} visitas${u.ult ? ' · últ. ' + fmtFecha(u.ult) : ''} · <b>${t} tocan</b></span></div>`; }).join('')}
+    ${users.map(u => `<div class="row small"><span>${esc(u.usuario)} · ${esc(u.nombre)}</span><span>${u.nv} visitas · ${u.ns} sitios${u.ult ? ' · últ. ' + fmtFecha(u.ult) : ''}</span></div>`).join('')}
   </section>
 
   <h2 class="zona">Sitios nuevos por revisar (${nuevos.length})</h2>
@@ -735,10 +807,12 @@ function vPanel() {
     ${corr.length ? '<button class="secondary" id="btnCorr">Descargar CSV para Hoteles</button>' : ''}
   </section>
 
-  <h2 class="zona">Asignar paquetes</h2>
+  <h2 class="zona">Coordenadas (para «📍 Cerca»)</h2>
   <section class="card">
-    ${paquetes().map(p => `<div class="row small asig"><span>${esc(p.id)}</span>
-      <select data-paq="${esc(p.id)}"><option value="">—</option>${nombres.map(n => `<option ${n === p.asignado_a ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>`).join('')}
+    <p class="small">${conGeo} de ${(data.sitios || []).length} sitios con coordenadas${sinGeoNo ? ` · ${sinGeoNo} sin calcular` : ''}${geoNo ? ` · ${geoNo} no encontrados (revisar dirección en el maestro)` : ''}.</p>
+    ${sinGeoNo ? `<button class="primary" id="btnGeo">Calcular coordenadas (${sinGeoNo})</button>` : ''}
+    ${geoNo ? `<button class="secondary" id="btnGeoRe">Reintentar no encontrados (${geoNo})</button>` : ''}
+    <div id="geoOut" class="small"></div>
   </section>
 
   <h2 class="zona">Últimas visitas</h2>
@@ -746,7 +820,7 @@ function vPanel() {
 
   <h2 class="zona">Maestro de sitios</h2>
   <section class="card">
-    <p class="small">Actual: ${(data.sitios || []).length} sitios (${total} en ronda) · ${paquetes().length} paquetes. Cada carga reemplaza el maestro entero; las visitas se conservan (van por ID).</p>
+    <p class="small">Actual: ${(data.sitios || []).length} sitios (${total} en ronda). Cada carga reemplaza el maestro entero; las visitas se conservan (van por ID).</p>
     <label class="small">Pega el enlace de la hoja maestra nueva (RONDAS – SITIOS vX)
       <input id="maestroUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/…"></label>
     <button class="primary" id="btnMaestro">Cargar desde la hoja</button>
@@ -766,18 +840,31 @@ function vPanel() {
     data.visitas = j.visitas; ls.set(LS.data, data); toast(def ? 'Visita enlazada a ' + def : 'Marcado como revisado'); vPanel();
   }));
   const bn = $('#btnNuevosCSV');
-  if (bn) bn.onclick = () => descargarCSV(`SITIOS_NUEVOS_${hoyISO()}.csv`, ['id_provisional', 'nombre', 'direccion', 'tipo', 'telefono', 'observaciones', 'fecha', 'visitador'],
-    nuevos.map(v => ({ id_provisional: v.sitio_id, nombre: v.nuevo_nombre, direccion: v.nuevo_direccion, tipo: TIPOS[v.nuevo_tipo] || v.nuevo_tipo,
-      telefono: v.nuevo_telefono, observaciones: v.observaciones, fecha: v.fecha, visitador: nombreUsuario(v.usuario) })));
+  if (bn) bn.onclick = () => descargarCSV(`SITIOS_NUEVOS_${hoyISO()}.csv`, ['id_provisional', 'nombre', 'direccion', 'tipo', 'telefono', 'observaciones', 'fecha', 'visitador', 'lat', 'lng'],
+    nuevos.map(v => { const g = (data.geo_nuevos || []).find(x => x.sitio_id === v.sitio_id) || {};
+      return { id_provisional: v.sitio_id, nombre: v.nuevo_nombre, direccion: v.nuevo_direccion, tipo: TIPOS[v.nuevo_tipo] || v.nuevo_tipo,
+        telefono: v.nuevo_telefono, observaciones: v.observaciones, fecha: v.fecha, visitador: nombreUsuario(v.usuario), lat: g.lat ?? '', lng: g.lng ?? '' }; }));
   view.querySelectorAll('[data-fj]').forEach(b => b.onclick = () => {
     const f = view.querySelector(`[data-fjf="${b.dataset.fj}"]`).value;
     if (!f) return toast('Elige una fecha');
     fijarProxima(b.dataset.fj, f);
   });
-  view.querySelectorAll('[data-paq]').forEach(sel => sel.onchange = () => online(async () => {
-    const j = await call('asignar', { paquete: sel.dataset.paq, asignado_a: sel.value });
-    data.paquetes = j.paquetes; ls.set(LS.data, data); toast('Asignado');
-  }));
+  const geo = reintentar => online(async () => {
+    const out = $('#geoOut'); let hechos = 0, fallidos = [], quedan = 1, vuelta = 0;
+    view.querySelectorAll('#btnGeo, #btnGeoRe').forEach(b => { b.disabled = true; });
+    while (quedan > 0 && vuelta < 30) {
+      out.textContent = `Calculando… ${hechos} encontradas${fallidos.length ? ', ' + fallidos.length + ' sin resultado' : ''}. No cierres la app.`;
+      const j = await call('geocodificar', { reintentar: reintentar && vuelta === 0 });
+      hechos += j.hechos; fallidos = fallidos.concat(j.fallidos); quedan = j.quedan; vuelta++;
+      if (!j.hechos && !j.fallidos.length) break;
+      reintentar = false;
+    }
+    await refresh({ silent: true });
+    toast(`Coordenadas: ${hechos} encontradas${fallidos.length ? ', ' + fallidos.length + ' sin resultado' : ''}`, 5000);
+    if (fallidos.length) { const o = $('#geoOut'); if (o) o.innerHTML = '<b>Sin resultado (revisar dirección):</b><br>' + fallidos.map(esc).join('<br>'); }
+  });
+  const bg = $('#btnGeo'); if (bg) bg.onclick = () => geo(false);
+  const bgr = $('#btnGeoRe'); if (bgr) bgr.onclick = () => geo(true);
   const exp = (marcar, todas) => online(async () => {
     if (queue.length) await sync({ silent: true });
     const j = await call('exportar', { marcar, todas });
@@ -854,13 +941,23 @@ async function demo(action, body) {
         const i = srv.visitas.findIndex(x => x.id === v.id);
         if (i >= 0) {
           if (srv.visitas[i].usuario !== user.usuario && !user.admin) return { id: v.id, ok: false, error: 'Solo puedes editar tus visitas' };
-          srv.visitas[i] = { ...v, usuario: srv.visitas[i].usuario, contactado: srv.visitas[i].contactado, exportado: srv.visitas[i].exportado ? 'MODIFICADA' : '' };
-        } else if (!v.borrado) srv.visitas.push({ ...v, usuario: user.usuario, exportado: '' });
+          srv.visitas[i] = { ...v, usuario: srv.visitas[i].usuario, contactado: srv.visitas[i].contactado, fotos: srv.visitas[i].fotos || '', exportado: srv.visitas[i].exportado ? 'MODIFICADA' : '' };
+        } else if (!v.borrado) srv.visitas.push({ ...v, usuario: user.usuario, exportado: '', fotos: '' });
         return { id: v.id, ok: true };
       });
       save(); return { ok: true, resultados: res, visitas: vivas() };
     }
     case 'asignar': srv.asig[body.paquete] = body.asignado_a; save(); return { ok: true, paquetes: paqs() };
+    case 'fijarPrioridad': { const x = srv.sitios.find(y => y.id === body.sitio_id);
+      if (x.prioridad_maestro === undefined) x.prioridad_maestro = x.prioridad || '';
+      x.prioridad = body.prioridad || x.prioridad_maestro; x.prioridad_app = !!body.prioridad; save(); return { ok: true, sitios: srv.sitios }; }
+    case 'geocodificar': { const pend = srv.sitios.filter(y => y.lat == null || y.lat === '').slice(0, 60);
+      pend.forEach((y, i) => { if (i % 15 === 14) { y.geo = 'no'; return; } y.lat = 38.345 + (Math.random() - .5) * .06; y.lng = -0.485 + (Math.random() - .5) * .08; y.geo = 'ok'; });
+      save(); return { ok: true, hechos: pend.filter(y => y.geo === 'ok').length, fallidos: pend.filter(y => y.geo === 'no').map(y => y.id + ' · ' + y.nombre),
+        quedan: srv.sitios.filter(y => (y.lat == null || y.lat === '') && y.geo !== 'no').length }; }
+    case 'subirFoto': { const v = srv.visitas.find(x => x.id === body.visita_id); if (!v) fail('Visita no encontrada');
+      const id = 'DEMO' + body.foto_id; if (!String(v.fotos || '').includes(id)) v.fotos = [v.fotos, id].filter(Boolean).join(',');
+      save(); return { ok: true, file_id: id }; }
     case 'revisarNuevo': { const v = srv.visitas.find(x => x.id === body.id); v.revisado = true; if (body.sitio_id) v.sitio_id = body.sitio_id; save(); return { ok: true, visitas: vivas() }; }
     case 'fijarProxima': srv.prox = (srv.prox || []).filter(x => x.sitio_id !== body.sitio_id).concat(body.fecha ? [{ sitio_id: body.sitio_id, fecha: body.fecha }] : []); save(); return { ok: true, proximas: srv.prox };
     case 'contactado': srv.visitas.find(v => v.id === body.id).contactado = body.valor; save(); return { ok: true, visitas: vivas() };
@@ -906,6 +1003,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && auth && Date.now() - lastRefresh > 2 * 60000) sync({ silent: true }).then(() => refresh({ silent: true }));
 });
 const ver = document.createElement('div'); ver.id = 'ver'; ver.textContent = 'v' + APP_V; document.body.appendChild(ver);
+const mPaq = $('#menu [data-go="#/paquetes"]'); if (mPaq) { mPaq.textContent = 'Lista de sitios'; mPaq.dataset.go = '#/'; }
 route();
-if (auth && data) { sync({ silent: true }).then(() => refresh({ silent: true })); }
+cargarFotosCola().then(() => { if (auth && data) sync({ silent: true }).then(() => refresh({ silent: true })); });
 })();
