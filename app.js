@@ -2,10 +2,10 @@
 (() => {
 'use strict';
 
-const APP_V = '1.8';
+const APP_V = '1.8.2';
 const API = (window.RONDAS_API || '').trim();
 const DEMO = !API;
-const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', vista: 'rondas_vista', filtroT: 'rondas_filtro_t' };
+const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', vista: 'rondas_vista', filtroT: 'rondas_filtro_t', zonas: 'rondas_zonas_abiertas' };
 const TIPOS = { hotel: 'Hotel', clinica: 'Clínica', residencia: 'Residencia', negocio: 'Negocio', ambulatorio: 'Ambulatorio', restaurante: 'Restaurante', otro: 'Otro' };
 
 /* ───────── estado ───────── */
@@ -351,8 +351,10 @@ function vLogin() {
       await refresh({ silent: true });
       route();
     } catch (err) {
-      auth = null;
-      $('#loginMsg').textContent = err.server ? err.message : 'Sin conexión con el servidor';
+      console.error(err);
+      if (!err.server && auth?.usuario && data) { route(); return; }   // ya entró: fallo al pintar, no de login
+      auth = null; ls.del(LS.auth);
+      const m = $('#loginMsg'); if (m) m.textContent = err.server ? err.message : 'Sin conexión con el servidor'; else route();
     }
   };
 }
@@ -412,8 +414,17 @@ function vLista() {
     }
   } else {
     const zonas = [...new Set(filas.map(x => x.s.zona || 'Sin zona'))];
+    const abiertas = ls.get(LS.zonas, []);
     cuerpo = zonas.map(z => { const g = filas.filter(x => (x.s.zona || 'Sin zona') === z).sort(ordenPrio);
-      return `<h2 class="zona">${esc(z)} (${g.length})</h2>${g.map(x => itemSitio(x, null, true)).join('')}`; }).join('');
+      /* segundo nivel: barrio del maestro (si falta, el paquete). Si la zona tiene un solo barrio, sin segundo nivel. */
+      const barrioDe = x => String(x.s.barrio || '').trim() || String(x.s.paquete || '').trim() || 'Sin barrio';
+      const barrios = [...new Set(g.map(barrioDe))].sort((a, b) => a.localeCompare(b, 'es'));
+      const dentro = barrios.length < 2 ? g.map(x => itemSitio(x, null, true)).join('')
+        : barrios.map(bn => { const gb = g.filter(x => barrioDe(x) === bn); const key = z + '|' + bn;
+            return `<details class="zona-acc barrio" data-z="${esc(key)}" ${abiertas.includes(key) ? 'open' : ''}>
+              <summary>${resumenGrupo(bn, gb, filtro)}</summary>${gb.map(x => itemSitio(x, null, true)).join('')}</details>`; }).join('');
+      return `<details class="zona-acc" data-z="${esc(z)}" ${abiertas.includes(z) ? 'open' : ''}>
+        <summary>${resumenGrupo(z, g, filtro)}</summary>${dentro}</details>`; }).join('');
   }
 
   view.innerHTML = `
@@ -442,6 +453,9 @@ function vLista() {
     vLista();
   };
   $('#segFiltro').onclick = e => { const b = e.target.closest('button'); if (!b) return; ls.set(LS.filtroT, b.dataset.v); vLista(); };
+  view.querySelectorAll('details.zona-acc').forEach(d => d.ontoggle = () => {
+    const a = new Set(ls.get(LS.zonas, [])); d.open ? a.add(d.dataset.z) : a.delete(d.dataset.z); ls.set(LS.zonas, [...a]);
+  });
   const bu = $('#btnUbic'); if (bu) bu.onclick = async () => { if (await pedirUbicacion()) vLista(); };
   const q = $('#q');
   q.oninput = () => {
@@ -451,13 +465,17 @@ function vLista() {
     $('#res').innerHTML = t ? (r.length ? r.map(s => itemSitio({ s, p: plan(s) }, miPos && tieneGeo(s) ? distKm(miPos, { lat: Number(s.lat), lng: Number(s.lng) }) : null)).join('') : '<p class="empty">Sin resultados</p>') : '';
   };
 }
-function matchSitio(s, t) { return norm(`${s.nombre} ${s.direccion} ${s.id} ${s.abonado} ${s.zona}`).includes(t); }
+function resumenGrupo(nombre, g, filtro) {
+  const nT = g.filter(x => toca(x.p)).length, nAp = g.filter(x => x.s.prioridad === 'A+').length, nJ = g.filter(x => pendJ(x.s.id).length).length;
+  return `<span class="zn">${esc(nombre)}</span><span class="zc">${nAp ? '<span class="prio pAp">A+</span>' : ''}${nJ ? '<span class="jbadge">J</span>' : ''}<b>${g.length}</b>${filtro === 'todos' && nT ? ` · ${nT} tocan` : ''}</span>`;
+}
+function matchSitio(s, t) { return norm(`${s.nombre} ${s.direccion} ${s.id} ${s.abonado} ${s.zona} ${s.barrio || ''}`).includes(t); }
 
 function itemSitio({ s, p }, dist, sinZona) {
   const u = p.u;
   return `<a class="card sitio ${prioClase(s)} ${s.situacion === 'cliente' ? 'cli' : 'nuevo'}${p.fuera ? ' bloq' : ''}" href="#/sitio/${s.id}">
     <div class="row"><strong>${prioTag(s)}${esc(s.nombre)}</strong><span class="der">${jTag(s.id)}${dist != null ? `<span class="dist">${fmtDist(dist)}</span>` : u ? `<span class="ok">✓ ${fmtFecha(u.fecha)}</span>` : ''}</span></div>
-    <div class="muted small">${esc(TIPOS[s.tipo] || s.tipo)} · ${esc(s.direccion)}${!sinZona && s.zona ? ` · <em>${esc(s.zona)}</em>` : ''}</div>
+    <div class="muted small">${esc(TIPOS[s.tipo] || s.tipo)} · ${esc(s.direccion)}${!sinZona && (s.barrio || s.zona) ? ` · <em>${esc(s.barrio || s.zona)}</em>` : ''}</div>
     ${s.sin_recepcion ? '<div class="tag warn">Sin recepción</div> ' : ''}<div class="tag ${toca(p) && !p.pendiente ? 'warn' : ''}">${esc(textoPlan(p))}</div>
   </a>`;
 }
@@ -497,6 +515,7 @@ function vSitio(id) {
       ${auth.admin ? `<dd class="prio-sel" id="prioSel">${['A+', 'A', 'B', 'C'].map(k => `<button type="button" data-p="${k}" class="prio ${prioCls(k)} ${s.prioridad === k ? 'on' : ''}">${k}</button>`).join('')}
         ${s.prioridad_app ? `<button type="button" data-p="" class="small-btn">Volver a la del maestro (${esc(s.prioridad_maestro || 'sin')})</button>` : ''}</dd>` : ''}
       ${s.contacto ? `<dt>Contacto</dt><dd>${esc(s.contacto)}</dd>` : ''}
+      ${s.barrio || s.zona ? `<dt>Zona · barrio</dt><dd>${esc([s.zona, s.barrio].filter(Boolean).join(' · '))}</dd>` : ''}
       <dt>Dirección</dt><dd><span data-copy="${esc(s.direccion)}">${esc(s.direccion) || '—'}</span>
         ${s.direccion || tieneGeo(s) ? ` · <a class="link" target="_blank" rel="noopener" href="${esc(urlMapa(s))}">Cómo llegar</a>` : ''}</dd>
       <dt>Teléfono</dt><dd ${tel.txt ? `data-copy="${esc(tel.txt)}"` : ''}>${tel.txt ? (tel.ext ? `Ext. interna ${esc(tel.txt)}` : esc(tel.txt)) : '<span class="muted">sin dato</span>'}
