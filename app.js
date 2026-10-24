@@ -2,10 +2,10 @@
 (() => {
 'use strict';
 
-const APP_V = '1.8.2';
+const APP_V = '1.8.4';
 const API = (window.RONDAS_API || '').trim();
 const DEMO = !API;
-const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', vista: 'rondas_vista', filtroT: 'rondas_filtro_t', zonas: 'rondas_zonas_abiertas' };
+const LS = { auth: 'rondas_auth', data: 'rondas_data', queue: 'rondas_queue', vista: 'rondas_vista', quien: 'rondas_visitas_quien', filtroT: 'rondas_filtro_t', zonas: 'rondas_zonas_abiertas' };
 const TIPOS = { hotel: 'Hotel', clinica: 'Clínica', residencia: 'Residencia', negocio: 'Negocio', ambulatorio: 'Ambulatorio', restaurante: 'Restaurante', otro: 'Otro' };
 
 /* ───────── estado ───────── */
@@ -127,7 +127,7 @@ function pseudoSitio(id) {   // ficha mínima a partir de la última visita del 
     telefono: v.nuevo_telefono || '', email: '', paquete: '', zona: '', situacion: 'nuevo', recomendacion: '' };
 }
 const nombreSitio = id => sitio(id)?.nombre || pseudoSitio(id)?.nombre || id;
-const btnNuevo = () => `<a class="nuevo-btn" href="#/visita/nuevo">➕ Sitio nuevo (no está en la lista)</a>`;
+const btnNuevo = () => `<div class="acciones"><a class="nuevo-btn" href="#/visita/nuevo">➕ Sitio nuevo</a><a class="nuevo-btn mis" href="#/visitas">📋 Visitas</a></div>`;
 
 const prioCls = p => ({ 'A+': 'pAp', A: 'pA', B: 'pB', C: 'pC' }[p] || '');
 const prioTag = s => PRIO[s.prioridad] !== undefined ? `<span class="prio ${prioCls(s.prioridad)}">${esc(s.prioridad)}</span>` : '';
@@ -303,6 +303,7 @@ function route() {
     case 'sitio': return vSitio(a);
     case 'visita': return vForm(a, b);
     case 'panel': return auth.admin ? vPanel() : vLista();
+    case 'visitas': return vVisitas();
     default: return vLista();   // una sola lista (los paquetes ya no se usan para navegar)
   }
 }
@@ -360,7 +361,8 @@ function vLogin() {
 }
 
 /* ───────── 2 · LISTA ÚNICA DE SITIOS: vistas Zona / Prioridad / Cerca · filtro Tocan / 7 días / Todos ───────── */
-let miPos = null;   // { lat, lng, ts } (solo en memoria)
+let miPos = null;   // punto de referencia { lat, lng, ts, etq } (solo en memoria): mi ubicación o una calle escrita
+let ultCalle = '';
 const distKm = (a, b) => {
   const R = 6371, r = x => x * Math.PI / 180;
   const dLat = r(b.lat - a.lat), dLng = r(b.lng - a.lng);
@@ -373,9 +375,18 @@ function pedirUbicacion() {
   if (!navigator.geolocation) { toast('Este móvil no da la ubicación'); return Promise.resolve(false); }
   toast('Buscando tu ubicación…', 8000);
   return new Promise(res => navigator.geolocation.getCurrentPosition(
-    p => { miPos = { lat: p.coords.latitude, lng: p.coords.longitude, ts: Date.now() }; toast('Ubicación lista'); res(true); },
+    p => { miPos = { lat: p.coords.latitude, lng: p.coords.longitude, ts: Date.now(), etq: 'tu ubicación' }; toast('Ubicación lista'); res(true); },
     e => { toast(e.code === 1 ? 'Permiso de ubicación denegado: actívalo en el navegador' : 'No se pudo obtener la ubicación'); res(false); },
     { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }));
+}
+async function buscarCalle(texto) {
+  if (!texto) return false;
+  if (!navigator.onLine && !DEMO) { toast('Buscar una calle necesita conexión'); return false; }
+  try {
+    const j = await call('buscarCalle', { texto });
+    if (!j.encontrado) { toast('No encuentro esa calle. Prueba con número y municipio.'); return false; }
+    miPos = { lat: j.lat, lng: j.lng, ts: Date.now(), etq: j.direccion || texto }; ultCalle = texto; return true;
+  } catch (e) { toast(e.server ? 'Error: ' + e.message : 'Sin conexión'); return false; }
 }
 const GRUPOS_PRIO = [['A+', 'A+ · urgente'], ['A', 'A · importante'], ['B', 'B · seguimiento'], ['C', 'C · mantener'], ['', 'Sin prioridad']];
 
@@ -403,15 +414,33 @@ function vLista() {
       return g.length ? `<h2 class="zona">${esc(t)} (${g.length})</h2>${g.map(x => itemSitio(x)).join('')}` : '';
     }).join('');
   } else if (vista === 'cerca') {
-    if (!miPos) cuerpo = `<button class="primary big block" id="btnUbic">📍 Ordenar por mi ubicación</button>
-      <p class="muted small legend">Pide permiso de ubicación una vez. Solo se usa en el móvil para ordenar; no se guarda.</p>`;
+    const caja = `<div class="card cerca-box">
+      <button class="primary" id="btnUbic" type="button">📍 Usar mi ubicación</button>
+      <form id="fCalle" class="fijar"><input id="calle" type="search" placeholder="…o escribe una calle (ej.: Av. Denia 103)" value="${esc(ultCalle)}" autocomplete="off"><button class="small-btn" type="submit">Buscar</button></form>
+    </div>`;
+    if (!miPos) cuerpo = caja + '<p class="muted small legend">La ubicación solo se usa en el móvil para ordenar; no se guarda.</p>';
     else {
       const con = filas.filter(x => tieneGeo(x.s)).map(x => ({ ...x, d: distKm(miPos, { lat: Number(x.s.lat), lng: Number(x.s.lng) }) })).sort((a, b) => a.d - b.d);
       const sin = filas.filter(x => !tieneGeo(x.s)).sort(ordenPrio);
-      cuerpo = `<p class="muted small legend">Desde tu posición de hace ${Math.max(0, Math.round((Date.now() - miPos.ts) / 60000))} min · <a class="link" id="btnUbic" href="javascript:void 0">↻ actualizar</a></p>
+      cuerpo = `${caja}<p class="muted small legend">Más cercanos a <b>${esc(miPos.etq)}</b>${miPos.etq === 'tu ubicación' ? ` (hace ${Math.max(0, Math.round((Date.now() - miPos.ts) / 60000))} min)` : ''}</p>
         ${con.map(x => itemSitio(x, x.d)).join('')}
         ${sin.length ? `<h2 class="zona">Sin coordenadas (${sin.length})</h2>${sin.map(x => itemSitio(x)).join('')}` : ''}`;
     }
+  } else if (vista === 'paq') {
+    /* paquetes como antes: asignado, % visitado, verde al completar. Los míos primero. Dentro, los sitios según el filtro. */
+    const abiertas = ls.get(LS.zonas, []);
+    const vis = visitadosSet();
+    const ps = paquetesInfo().sort((a, b) => (esMio(b) ? 1 : 0) - (esMio(a) ? 1 : 0));
+    cuerpo = ps.map(p => {
+      const r = p.sitios.filter(enRonda), n = r.length, k = r.filter(x => vis.has(x.id)).length, pc = n ? Math.round(100 * k / n) : 100;
+      const dentro = filas.filter(x => x.s.paquete === p.id).sort(ordenPrio);
+      const nT = p.sitios.filter(x => toca(plan(x))).length, key = 'paq|' + p.id;
+      return `<details class="zona-acc paq ${pc === 100 ? 'hecho' : ''}" data-z="${esc(key)}" ${abiertas.includes(key) ? 'open' : ''}>
+        <summary><span class="zn">${esc(p.id)}</span><span class="zc">${p.asignado_a ? `<span class="quien${esMio(p) ? ' mio' : ''}">${esc(p.asignado_a)}</span>` : ''}<b>${pc}%</b></span>
+          <span class="pbar"><i style="width:${pc}%"></i></span>
+          <span class="small muted psub">${pc === 100 ? '✓ Completado · ' : ''}${k} de ${n} visitados${nT ? ` · <span class="pend">${nT} toca${nT > 1 ? 'n' : ''}</span>` : ''}</span></summary>
+        ${dentro.length ? dentro.map(x => itemSitio(x, null, true)).join('') : `<p class="empty small">${filtro === 'todos' ? 'Sin sitios' : 'Nada pendiente con este filtro'}</p>`}</details>`;
+    }).join('');
   } else {
     const zonas = [...new Set(filas.map(x => x.s.zona || 'Sin zona'))];
     const abiertas = ls.get(LS.zonas, []);
@@ -427,13 +456,19 @@ function vLista() {
         <summary>${resumenGrupo(z, g, filtro)}</summary>${dentro}</details>`; }).join('');
   }
 
+  const mias = visitas().filter(v => String(v.usuario) === String(auth.usuario))
+    .sort((a, b) => (b.fecha + b.hora).localeCompare(a.fecha + a.hora)).slice(0, 3);
   view.innerHTML = `
   ${btnNuevo()}
+  ${mias.length ? `<section class="card ultimas"><div class="row"><b>Tus últimas visitas</b><a class="link" href="#/visitas">Ver todas →</a></div>
+    ${mias.map(v => `<div class="row uv"><a href="#/sitio/${esc(v.sitio_id)}"><span>${esc(nombreSitio(v.sitio_id))}</span> <span class="muted small">${fmtFecha(v.fecha)}${v._pend ? ' · <b class="pend">sin enviar</b>' : ''}</span></a>
+      <a class="small-btn" href="#/visita/${esc(v.sitio_id)}/${encodeURIComponent(v.id)}" data-desde="inicio">Editar</a></div>`).join('')}</section>` : ''}
   <div class="search"><input id="q" type="search" placeholder="Buscar sitio por nombre, calle o ID…" autocomplete="off"></div>
   <div id="res"></div>
   <div id="lista">
     <div class="seg tabs" id="segVista">
-      <button data-v="zona" class="${vista === 'zona' ? 'on' : ''}">Por zona</button>
+      <button data-v="zona" class="${vista === 'zona' ? 'on' : ''}">Zona</button>
+      <button data-v="paq" class="${vista === 'paq' ? 'on' : ''}">Paquetes</button>
       <button data-v="prio" class="${vista === 'prio' ? 'on' : ''}">Prioridad</button>
       <button data-v="cerca" class="${vista === 'cerca' ? 'on' : ''}">📍 Cerca</button>
     </div>
@@ -449,7 +484,6 @@ function vLista() {
   $('#segVista').onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;
     ls.set(LS.vista, b.dataset.v);
-    if (b.dataset.v === 'cerca' && !miPos) await pedirUbicacion();
     vLista();
   };
   $('#segFiltro').onclick = e => { const b = e.target.closest('button'); if (!b) return; ls.set(LS.filtroT, b.dataset.v); vLista(); };
@@ -457,6 +491,7 @@ function vLista() {
     const a = new Set(ls.get(LS.zonas, [])); d.open ? a.add(d.dataset.z) : a.delete(d.dataset.z); ls.set(LS.zonas, [...a]);
   });
   const bu = $('#btnUbic'); if (bu) bu.onclick = async () => { if (await pedirUbicacion()) vLista(); };
+  const fc = $('#fCalle'); if (fc) fc.onsubmit = async e => { e.preventDefault(); const t = $('#calle').value.trim(); if (!t) return; toast('Buscando…'); if (await buscarCalle(t)) vLista(); };
   const q = $('#q');
   q.oninput = () => {
     const t = norm(q.value.trim());
@@ -469,6 +504,17 @@ function resumenGrupo(nombre, g, filtro) {
   const nT = g.filter(x => toca(x.p)).length, nAp = g.filter(x => x.s.prioridad === 'A+').length, nJ = g.filter(x => pendJ(x.s.id).length).length;
   return `<span class="zn">${esc(nombre)}</span><span class="zc">${nAp ? '<span class="prio pAp">A+</span>' : ''}${nJ ? '<span class="jbadge">J</span>' : ''}<b>${g.length}</b>${filtro === 'todos' && nT ? ` · ${nT} tocan` : ''}</span>`;
 }
+function paquetesInfo() {
+  const asig = new Map((data?.paquetes || []).map(p => [String(p.id), p.asignado_a || '']));
+  const m = new Map();
+  (data?.sitios || []).forEach(x => {
+    const id = String(x.paquete || 'Sin paquete');
+    if (!m.has(id)) m.set(id, { id, zona: x.zona, asignado_a: asig.get(id) || '', sitios: [] });
+    m.get(id).sitios.push(x);
+  });
+  return [...m.values()];
+}
+function esMio(p) { const a = norm(p.asignado_a); return !!a && (a === norm(auth.nombre) || a === String(auth.usuario)); }
 function matchSitio(s, t) { return norm(`${s.nombre} ${s.direccion} ${s.id} ${s.abonado} ${s.zona} ${s.barrio || ''}`).includes(t); }
 
 function itemSitio({ s, p }, dist, sinZona) {
@@ -516,13 +562,15 @@ function vSitio(id) {
         ${s.prioridad_app ? `<button type="button" data-p="" class="small-btn">Volver a la del maestro (${esc(s.prioridad_maestro || 'sin')})</button>` : ''}</dd>` : ''}
       ${s.contacto ? `<dt>Contacto</dt><dd>${esc(s.contacto)}</dd>` : ''}
       ${s.barrio || s.zona ? `<dt>Zona · barrio</dt><dd>${esc([s.zona, s.barrio].filter(Boolean).join(' · '))}</dd>` : ''}
-      <dt>Dirección</dt><dd><span data-copy="${esc(s.direccion)}">${esc(s.direccion) || '—'}</span>
-        ${s.direccion || tieneGeo(s) ? ` · <a class="link" target="_blank" rel="noopener" href="${esc(urlMapa(s))}">Cómo llegar</a>` : ''}</dd>
+      <dt>Dirección</dt><dd data-copy="${esc(s.direccion)}">${esc(s.direccion) || '—'}</dd>
       <dt>Teléfono</dt><dd ${tel.txt ? `data-copy="${esc(tel.txt)}"` : ''}>${tel.txt ? (tel.ext ? `Ext. interna ${esc(tel.txt)}` : esc(tel.txt)) : '<span class="muted">sin dato</span>'}
         ${c.telNuevo ? `<span class="muted small"> · apuntado en visita ${fmtFecha(c.telNuevo.fecha)}</span>` : ''}</dd>
       <dt>Email</dt><dd ${c.email ? `data-copy="${esc(c.email)}"` : ''}>${c.email ? esc(c.email) : '<span class="muted">sin dato</span>'}
         ${c.emailNuevo ? `<span class="muted small"> · apuntado en visita ${fmtFecha(c.emailNuevo.fecha)}</span>` : ''}</dd>
-      <dt>¿Tiene Foxtrot?</dt><dd>${si(s.tiene_foxtrot)}</dd>
+      <dt>Foxtrot / botonera <span class="muted small">(estado actual)</span></dt><dd>${[
+        s.tiene_foxtrot ? '<span class="chip fx">✓ Foxtrot</span> <span class="muted small">cuenta web en el PC de recepción</span>' : '',
+        s.tiene_botonera ? '<span class="chip">✓ Botonera TB80</span> <span class="muted small">aparato físico (no se ofrece)</span>' : ''
+      ].filter(Boolean).join('<br>') || '<span class="muted">Ninguno</span>'}</dd>
       <dt>PMG / tarifa pactada</dt><dd>${si(s.pacto_pmg)}${s.abonado ? ` <span class="muted small">· abonado ${esc(s.abonado)}</span>` : ''}</dd>
       <dt>Hotel → aeropuerto <span class="muted small">(dato interno de referencia)</span></dt>
         <dd>${s.pmg_precio != null || s.pmg_precio_festivo != null
@@ -547,8 +595,7 @@ function vSitio(id) {
       toast(b.dataset.p ? 'Prioridad ' + b.dataset.p : 'Prioridad del maestro'); rerender();
     }); };
 }
-const urlMapa = s => tieneGeo(s) ? `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`
-  : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.direccion + ', Alicante')}`;
+
 
 function vSitioNuevo(id) {
   const s = pseudoSitio(id);
@@ -590,7 +637,7 @@ function tarjetaVisita(v, conSitio) {
   const fotos = String(v.fotos || '').split(',').filter(Boolean);
   const fotosPend = fotosCola.filter(f => f.visita_id === v.id).length;
   return `<div class="card visita">
-    <div class="row"><strong>${s ? esc(s.nombre) : fmtFecha(v.fecha) + ' ' + esc(v.hora)}</strong>
+    <div class="row"><strong>${s ? `<a href="#/sitio/${esc(v.sitio_id)}">${prioTag(s)}${esc(s.nombre)}</a>` : fmtFecha(v.fecha) + ' ' + esc(v.hora)}</strong>
       <span class="muted small">${s ? fmtFecha(v.fecha) + ' · ' : ''}${esc(nombreUsuario(v.usuario))}${v._pend ? ' · <b class="pend">sin enviar</b>' : ''}</span></div>
     ${v.recibido_por ? `<div class="small">Recibe: ${esc(v.recibido_por)}</div>` : ''}
     <div class="small muted">${items}</div>
@@ -604,6 +651,38 @@ function tarjetaVisita(v, conSitio) {
   </div>`;
 }
 
+/* ───────── 4b · VISITAS: mías / de cada uno / todas, por día, con buscador y Editar ───────── */
+function vVisitas() {
+  volverA = '#/visitas';
+  header('Visitas', '#/');
+  const quien = ls.get(LS.quien, String(auth.usuario));   // '' = todas
+  const usuarios = data.usuarios || [];
+  const base = visitas().filter(v => !quien || String(v.usuario) === quien)
+    .sort((a, b) => (b.fecha + b.hora).localeCompare(a.fecha + a.hora));
+  view.innerHTML = `
+  <div class="seg tabs" id="segQuien">
+    <button data-v="${esc(auth.usuario)}" class="${quien === String(auth.usuario) ? 'on' : ''}">Mías</button>
+    ${usuarios.filter(u => String(u.usuario) !== String(auth.usuario)).map(u => `<button data-v="${esc(u.usuario)}" class="${quien === String(u.usuario) ? 'on' : ''}">${esc(u.nombre)}</button>`).join('')}
+    <button data-v="" class="${quien ? '' : 'on'}">Todas</button>
+  </div>
+  <div class="search"><input id="qv" type="search" placeholder="Buscar por sitio, quién os recibe, observaciones…" autocomplete="off"></div>
+  <div id="listaV"></div>`;
+  const pinta = t => {
+    const arr = t ? base.filter(v => norm(`${nombreSitio(v.sitio_id)} ${v.sitio_id} ${v.recibido_por} ${v.observaciones} ${v.contactar_motivo} ${v.nuevo_nombre}`).includes(t)) : base;
+    if (!arr.length) { $('#listaV').innerHTML = `<p class="empty">${t ? 'Sin resultados' : 'Aún no hay visitas'}</p>`; return; }
+    const dias = [...new Set(arr.map(v => v.fecha))];
+    $('#listaV').innerHTML = `<p class="muted small legend">${arr.length} visita${arr.length > 1 ? 's' : ''} · toca el nombre para ir a la ficha o «Editar» para corregir</p>` +
+      dias.map(d => { const g = arr.filter(v => v.fecha === d);
+        return `<h2 class="zona">${esc(fmtDiaLargo(d))} (${g.length})</h2>${g.map(v => tarjetaVisita(v, true)).join('')}`; }).join('');
+  };
+  pinta('');
+  $('#qv').oninput = e => pinta(norm(e.target.value.trim()));
+  $('#segQuien').onclick = e => { const b = e.target.closest('button'); if (!b) return; ls.set(LS.quien, b.dataset.v); vVisitas(); };
+}
+const fmtDiaLargo = iso => { const d = new Date(String(iso) + 'T12:00:00'); if (isNaN(d)) return fmtFecha(iso);
+  const t = d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  return iso === hoyISO() ? 'Hoy · ' + t : iso === addDias(hoyISO(), -1) ? 'Ayer · ' + t : t; };
+
 /* ───────── 5 · FORMULARIO DE VISITA ───────── */
 function vForm(sitioId, visitaId) {
   const alta = sitioId === 'nuevo';
@@ -615,7 +694,7 @@ function vForm(sitioId, visitaId) {
   if (visitaId && !prev) { location.hash = '#/sitio/' + sitioId; return; }
   if (prev && String(prev.usuario) !== String(auth.usuario) && !auth.admin) { location.hash = '#/sitio/' + sitioId; return; }
   if (s.no_visitar && !auth.admin) { toast('No visitar en ronda: lo lleva Jorge'); location.hash = '#/sitio/' + sitioId; return; }
-  header(prev ? 'Editar visita' : alta ? 'Sitio nuevo' : 'Nueva visita', alta ? (volverA || '#/') : '#/sitio/' + sitioId);
+  header(prev ? 'Editar visita' : alta ? 'Sitio nuevo' : 'Nueva visita', alta ? (volverA || '#/') : volverA === '#/visitas' ? '#/visitas' : '#/sitio/' + sitioId);
 
   const v = prev ? { ...prev } : {
     id: uid(), sitio_id: s.id, usuario: auth.usuario, fecha: hoyISO(), hora: horaAhora(),
@@ -658,7 +737,9 @@ function vForm(sitioId, visitaId) {
     ${yn('expositor_puesto', '¿Tiene expositor puesto?', true)}
     <div class="field"><span>Colocado hoy <span class="muted small">(toca lo que hayas puesto)</span></span>
       <div class="toggles">${chip('pegatina_puesta', 'Pegatina')}${chip('cartel_puesto', 'Cartel')}${chip('qr_puesto', 'QR')}</div></div>
-    ${s.tiene_foxtrot ? '<p class="muted small">Ya tiene Foxtrot.</p>' : yn('foxtrot_ofrecer', '¿Hay recepción que pida taxi? → ofrecer Foxtrot')}
+    ${s.tiene_foxtrot ? '<p class="muted small">Ya tiene Foxtrot (cuenta web en recepción).</p>'
+      : s.sin_recepcion ? ''
+      : `${yn('foxtrot_ofrecer', '¿Ofrecer Foxtrot?')}<p class="muted small hint">Solo si hay recepcionista y piden taxi a menudo (≈1-2 al día), y siempre con expositor y pegatinas. En comercios o sitios pequeños no merece la pena. La botonera no se ofrece nunca.</p>`}
     <fieldset><legend>Planos</legend>${yn('planos_tiene', '¿Tiene?', true)}${yn('planos_dejados', '¿Se le dejan?')}</fieldset>
     <fieldset><legend>Tarjetas</legend>${yn('tarjetas_tiene', '¿Tiene?', true)}${yn('tarjetas_dejadas', '¿Se le dejan?')}</fieldset>
     <div class="field"><span>Bolígrafos dados</span>
@@ -745,7 +826,7 @@ async function guardar(v, msg, fotos = []) {
   queue = queue.filter(x => x.id !== limpia.id).concat(limpia);
   ls.set(LS.queue, queue);
   toast(msg + (navigator.onLine || DEMO ? '' : ' · se enviará al tener red'));
-  location.hash = '#/sitio/' + v.sitio_id;
+  location.hash = volverA === '#/visitas' ? '#/visitas' : '#/sitio/' + v.sitio_id;
   sync({ silent: true });
 }
 
@@ -826,6 +907,12 @@ function vPanel() {
     ${corr.length ? '<button class="secondary" id="btnCorr">Descargar CSV para Hoteles</button>' : ''}
   </section>
 
+  <h2 class="zona">Asignar paquetes</h2>
+  <section class="card">
+    ${paquetesInfo().map(p => `<div class="row small asig"><span>${esc(p.id)}</span>
+      <select data-paq="${esc(p.id)}"><option value="">—</option>${(data.usuarios || []).map(u => `<option ${u.nombre === p.asignado_a ? 'selected' : ''}>${esc(u.nombre)}</option>`).join('')}</select></div>`).join('')}
+  </section>
+
   <h2 class="zona">Coordenadas (para «📍 Cerca»)</h2>
   <section class="card">
     <p class="small">${conGeo} de ${(data.sitios || []).length} sitios con coordenadas${sinGeoNo ? ` · ${sinGeoNo} sin calcular` : ''}${geoNo ? ` · ${geoNo} no encontrados (revisar dirección en el maestro)` : ''}.</p>
@@ -882,6 +969,10 @@ function vPanel() {
     toast(`Coordenadas: ${hechos} encontradas${fallidos.length ? ', ' + fallidos.length + ' sin resultado' : ''}`, 5000);
     if (fallidos.length) { const o = $('#geoOut'); if (o) o.innerHTML = '<b>Sin resultado (revisar dirección):</b><br>' + fallidos.map(esc).join('<br>'); }
   });
+  view.querySelectorAll('[data-paq]').forEach(sel => sel.onchange = () => online(async () => {
+    const j = await call('asignar', { paquete: sel.dataset.paq, asignado_a: sel.value });
+    data.paquetes = j.paquetes; ls.set(LS.data, data); toast('Asignado');
+  }));
   const bg = $('#btnGeo'); if (bg) bg.onclick = () => geo(false);
   const bgr = $('#btnGeoRe'); if (bgr) bgr.onclick = () => geo(true);
   const exp = (marcar, todas) => online(async () => {
@@ -967,6 +1058,7 @@ async function demo(action, body) {
       save(); return { ok: true, resultados: res, visitas: vivas() };
     }
     case 'asignar': srv.asig[body.paquete] = body.asignado_a; save(); return { ok: true, paquetes: paqs() };
+    case 'buscarCalle': return { ok: true, encontrado: true, lat: 38.3452, lng: -0.4815, direccion: body.texto + ' (demo)' };
     case 'fijarPrioridad': { const x = srv.sitios.find(y => y.id === body.sitio_id);
       if (x.prioridad_maestro === undefined) x.prioridad_maestro = x.prioridad || '';
       x.prioridad = body.prioridad || x.prioridad_maestro; x.prioridad_app = !!body.prioridad; save(); return { ok: true, sitios: srv.sitios }; }
@@ -1022,7 +1114,8 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && auth && Date.now() - lastRefresh > 2 * 60000) sync({ silent: true }).then(() => refresh({ silent: true }));
 });
 const ver = document.createElement('div'); ver.id = 'ver'; ver.textContent = 'v' + APP_V; document.body.appendChild(ver);
-const mPaq = $('#menu [data-go="#/paquetes"]'); if (mPaq) { mPaq.textContent = 'Lista de sitios'; mPaq.dataset.go = '#/'; }
+const mPaq = $('#menu [data-go="#/paquetes"]'); if (mPaq) { mPaq.textContent = 'Lista de sitios'; mPaq.dataset.go = '#/';
+  const mv = document.createElement('button'); mv.dataset.go = '#/visitas'; mv.textContent = 'Visitas'; mPaq.after(mv); }
 route();
 cargarFotosCola().then(() => { if (auth && data) sync({ silent: true }).then(() => refresh({ silent: true })); });
 })();
